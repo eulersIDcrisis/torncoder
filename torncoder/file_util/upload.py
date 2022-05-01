@@ -8,15 +8,14 @@ import enum
 import asyncio
 import warnings
 # Third-party imports.
-from tornado.escape import utf8
 from tornado.httputil import HTTPHeaders
 
 
-MULTIPART_FORM_DATA_TYPE = b'multipart/form-data'
+MULTIPART_FORM_DATA_TYPE = 'multipart/form-data'
 """Constant storing the 'multipart/form-data' content type."""
 
 
-BOUNDARY_REGEX = re.compile(br'boundary="?(?P<boundary>[^"]+)"?')
+BOUNDARY_REGEX = re.compile(r'boundary="?(?P<boundary>[^"]+)"?')
 """Regex to match the boundary option."""
 
 
@@ -61,22 +60,22 @@ class MultipartFormDataParser(object):
 
     @classmethod
     def from_content_type_header(cls, delegate, header):
+        if isinstance(header, bytes):
+            header = header.decode('utf-8')
         boundary = None
-        # Make sure the content_type_header is the multipart/form-data.
+        # Make sure the header is the multipart/form-data.
         parts = [
-            utf8(part).strip()
-            for part in content_type_header.split(b';')
+            part.strip()
+            for part in header.split(';')
         ]
         if parts[0].lower() != MULTIPART_FORM_DATA_TYPE:
-            raise ValueError(b"Invalid Content-Type: {}".format(parts[0]))
+            raise ValueError("Invalid Content-Type: {}".format(parts[0]))
 
         # Search for 'boundary='
         for part in parts:
             m = BOUNDARY_REGEX.match(part)
             if m:
                 boundary = m.group('boundary')
-                if boundary.startswith(b'"') and boundary.endswith(b'"'):
-                    boundary = boundary[1:-1]
                 return cls(delegate, boundary)
         raise ValueError("Required 'boundary' option not found in header!")
 
@@ -172,6 +171,10 @@ class MultipartFormDataParser(object):
                 # 'self._boundary_base', switch states and let that state
                 # handle this case more cleanly.
                 if self._buffer.startswith(self._boundary_next):
+                    # Mark the current file as finished.
+                    res = self._delegate.finish_file(self._name)
+                    if _is_awaitable(res):
+                        await res
                     self.change_state(ParserState.PARSE_BOUNDARY_LINE)
                     continue
 
@@ -183,6 +186,9 @@ class MultipartFormDataParser(object):
                     return
 
                 if self._buffer.startswith(self._boundary_end):
+                    res = self._delegate.finish_file(self._name)
+                    if _is_awaitable(res):
+                        await res
                     self.change_state(ParserState.PARSE_BOUNDARY_LINE)
                     continue
 
