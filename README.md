@@ -5,8 +5,6 @@ Tornado Utility Library for various features.
 This library contains a few common classes and helpers that:
  - Make file serving easier.
  - Make file uploads easier.
- - Permit piping output from processes easier.
- - Basic pool management.
 
 ## (Static) FileHandler Utilities
 
