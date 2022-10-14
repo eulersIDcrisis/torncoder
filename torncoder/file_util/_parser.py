@@ -1,38 +1,22 @@
-"""upload.py.
+"""_parser.py.
 
-Module that handles file uploads and streaming requests.
+Module for handling file request parsing.
 """
 import re
-import abc
 import enum
-import asyncio
 import warnings
-# Third-party imports.
+# Third-party Imports
 from tornado.httputil import HTTPHeaders
-
-
-MULTIPART_FORM_DATA_TYPE = 'multipart/form-data'
-"""Constant storing the 'multipart/form-data' content type."""
+# Local Imports
+from torncoder.utils import (
+    MULTIPART_FORM_DATA_TYPE,
+    parse_content_name,
+    is_awaitable
+)
 
 
 BOUNDARY_REGEX = re.compile(r'boundary="?(?P<boundary>[^"]+)"?')
 """Regex to match the boundary option."""
-
-
-NAME_REGEX = re.compile(r'name="?(?P<name>[^"]+)"?')
-"""Regex to match the name field."""
-
-
-def _parse_content_name(content_disp):
-    for field in content_disp.split(';'):
-        m = NAME_REGEX.search(field)
-        if m:
-            return m.group('name')
-    raise ValueError('No "name" field found in Content-Disposition!')
-
-
-def _is_awaitable(obj):
-    return asyncio.isfuture(obj) or asyncio.iscoroutine(obj)
 
 
 class ParserState(enum.Enum):
@@ -143,7 +127,7 @@ class MultipartFormDataParser(object):
                     data = self._buffer
                     self._buffer = bytearray()
                     res = self._delegate.file_data_received(self._name, data)
-                    if _is_awaitable(res):
+                    if is_awaitable(res):
                         await res
 
                     # Return because the whole buffer was written out.
@@ -159,7 +143,7 @@ class MultipartFormDataParser(object):
                     data = self._buffer[:idx]
                     self._buffer = self._buffer[idx:]
                     res = self._delegate.file_data_received(self._name, data)
-                    if _is_awaitable(res):
+                    if is_awaitable(res):
                         await res
 
                 # Not enough data (technically) to check against. Wait for
@@ -173,7 +157,7 @@ class MultipartFormDataParser(object):
                 if self._buffer.startswith(self._boundary_next):
                     # Mark the current file as finished.
                     res = self._delegate.finish_file(self._name)
-                    if _is_awaitable(res):
+                    if is_awaitable(res):
                         await res
                     self.change_state(ParserState.PARSE_BOUNDARY_LINE)
                     continue
@@ -187,7 +171,7 @@ class MultipartFormDataParser(object):
 
                 if self._buffer.startswith(self._boundary_end):
                     res = self._delegate.finish_file(self._name)
-                    if _is_awaitable(res):
+                    if is_awaitable(res):
                         await res
                     self.change_state(ParserState.PARSE_BOUNDARY_LINE)
                     continue
@@ -202,7 +186,7 @@ class MultipartFormDataParser(object):
                     data = self._buffer[:next_idx]
                     self._buffer = self._buffer[next_idx:]
                 res = self._delegate.file_data_received(self._name, data)
-                if _is_awaitable(res):
+                if is_awaitable(res):
                     await res
 
                 # Continue and run the check after this update.
@@ -260,11 +244,11 @@ class MultipartFormDataParser(object):
                 self._buffer = self._buffer[idx + 4:]
                 headers = HTTPHeaders.parse(data)
                 content_disp = headers.get('Content-Disposition', '')
-                name = _parse_content_name(content_disp)
+                name = parse_content_name(content_disp)
 
                 # Call the delegate with the new file.
                 res = self._delegate.start_new_file(name, headers)
-                if _is_awaitable(res):
+                if is_awaitable(res):
                     await res
 
                 # Update the buffer and the state.
@@ -276,7 +260,7 @@ class MultipartFormDataParser(object):
                 if len(self._buffer) > 0:
                     # WARNING: Data is left in the buffer when we should be
                     # finished...
-                    warning.warn("Finished with non-empty buffer ({} bytes "
+                    warnings.warn("Finished with non-empty buffer ({} bytes "
                                  "remaining).".format(len(self._buffer)))
 
                 # Even if there is data remaining, we should exit the loop.

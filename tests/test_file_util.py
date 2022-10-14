@@ -1,139 +1,35 @@
-"""file_util_test.py.
+"""test_file_util.py.
 
-Test cases for file_utils.
+Test Cases for the 'tornproxy.file_util' module.
 """
-import unittest
-import os
 import json
-import shutil
+import uuid
+import asyncio
+import unittest
 import tempfile
-# Third-party imports.
-from tornado import web, httpclient, httputil
-from tornado.testing import AsyncTestCase, AsyncHTTPTestCase, gen_test
-# Local imports
+from contextlib import AsyncExitStack
+# Third-party Imports
+from tornado import httputil, httpclient, web
+from tornado.testing import (
+    gen_test, AsyncTestCase, AsyncHTTPTestCase
+)
+# Local Imports
 from torncoder.file_util import (
-    BasicStaticFileHandler,
-    # For the MultipartFormData parsing tests.
-    MultipartFormDataParser
+    # Parser Imports
+    MultipartFormDataParser,
+    # Delegate Imports
+    AbstractFileDelegate,
+    MemoryFileDelegate,
+    SynchronousFileDelegate,
+    FileInfo,
+    SimpleFileManager,
+    # Import these to check which delegates are available.
+    NATIVE_AIO_FILE_DELEGATE_ENABLED,
+    THREADED_FILE_DELEGATE_ENABLED
 )
 
-# Try optional imports and flag which ones were successful. If an import
-# succeeds, we should run the additional tests for that section.
-try:
-    from torncoder.file_util import BasicAIOFileHandler
-
-    AIO_IMPORTED = True
-except ImportError:
-    AIO_IMPORTED = False
-
-
-# Hacky, but effective. Basically, this "nested" class definition prevents
-# this base unittest.TestCase subclass from being invoked directly by the
-# unittest module (which only scans classes defined at the module level),
-# but still allows for defining most of the test infrastructure in a common
-# base class. Each subclass _can_ be defined at the module level in order
-# to be found for test discovery. See here:
-# https://stackoverflow.com/questions/1323455/python-unit-test-with-base-and-sub-class
-class Base:
-
-    class FileHandlerTestBase(AsyncHTTPTestCase):
-
-        @classmethod
-        def setUpClass(cls):
-            cls.temp_dir = tempfile.mkdtemp()
-
-            # Create some files:
-            # A.txt
-            # B.data
-            path = os.path.join(cls.temp_dir, 'A.txt')
-            with open(path, 'wb') as stm:
-                stm.write(b'a' * 1024)
-
-        @classmethod
-        def tearDownClass(cls):
-            shutil.rmtree(cls.temp_dir, ignore_errors=True)
-
-        def tearDown(self):
-            # Close the asyncio's executor.
-            super().tearDown()
-
-        # NOTE: Each of these test cases will be 'inherited' by subclasses.
-        #
-        # They _can_ be overridden (and otherwise passed or decorated with
-        # `@unittest.skip('...')`).
-        @gen_test
-        async def test_basic_head_request(self):
-            url = self.get_url('/A.txt')
-            client = self.get_http_client()
-            req = httpclient.HTTPRequest(url, method='HEAD')
-            res = await client.fetch(req)
-            self.assertEqual(200, res.code)
-            self.assertIn('Etag', res.headers)
-            # No content should actually be sent.
-            self.assertFalse(res.body)
-
-        @gen_test
-        async def test_basic_get_request(self):
-            url = self.get_url('/A.txt')
-            client = self.get_http_client()
-            req = httpclient.HTTPRequest(url, method='GET')
-            res = await client.fetch(req)
-            self.assertEqual(200, res.code)
-            self.assertIn('Etag', res.headers)
-            self.assertEqual(b'a' * 1024, res.body)
-
-        @gen_test
-        async def test_basic_head_request_cache(self):
-            url = self.get_url('/A.txt')
-            client = self.get_http_client()
-            req = httpclient.HTTPRequest(url, method='HEAD')
-            res = await client.fetch(req)
-            self.assertEqual(200, res.code)
-            self.assertIn('Etag', res.headers)
-            etag = res.headers['Etag']
-            req = httpclient.HTTPRequest(url, method='HEAD', headers={
-                "If-None-Match": etag
-            })
-            res = await client.fetch(req, raise_error=False)
-            self.assertEqual(304, res.code)
-
-        @gen_test
-        async def test_basic_get_request_cache(self):
-            url = self.get_url('/A.txt')
-            client = self.get_http_client()
-            req = httpclient.HTTPRequest(url, method='GET')
-            res = await client.fetch(req)
-            self.assertEqual(200, res.code)
-            self.assertIn('Etag', res.headers)
-            self.assertEqual(b'a' * 1024, res.body)
-            etag = res.headers['Etag']
-            req = httpclient.HTTPRequest(url, method='HEAD', headers={
-                "If-None-Match": etag
-            })
-            res = await client.fetch(req, raise_error=False)
-            self.assertEqual(304, res.code)
-
-
-class BasicStaticFileHandlerTest(Base.FileHandlerTestBase):
-    """Test cases for the BasicStaticFileHandler class."""
-
-    def get_app(self):
-        return web.Application([
-            (r'/(.+)', BasicStaticFileHandler, dict(root_path=self.temp_dir))
-        ])
-
-
-if AIO_IMPORTED:
-    class BasicAIOFileHandlerTest(Base.FileHandlerTestBase):
-        """Test cases for the BasicAIOFileHandler class."""
-
-        def get_app(self):
-            return web.Application([
-                (r'/(.+)', BasicAIOFileHandler, dict(root_path=self.temp_dir))
-            ])
-
 #
-# FormData Parsing Test Cases
+# Parser Assertions
 #
 MULTIPART_DATA = b"""----boundarything\r
 Content-Disposition: form-data; name="a.txt"\r
@@ -353,6 +249,212 @@ class FileHandlerTestBase(AsyncHTTPTestCase):
         result = json.loads(response.body)
         self.assertEqual(result['a.txt'], 'asdf\n')
         self.assertEqual(result['b.txt'], 'bbb\n')
+
+
+#
+# AbstractFileDelegate Assertions
+#
+# Define some common test cases that should pass for any compliant
+# AbstractFileDelegate. These tests are defined abstractly so the test can be
+# repeated for different delegates.
+#
+async def assert_file_delegate_operations(
+    test_case: unittest.IsolatedAsyncioTestCase,
+    delegate: AbstractFileDelegate
+):
+    # Create a key with some data.
+    key = uuid.uuid1().hex
+    data = b'abcdefghijklmnopqrstuvwxyz'
+
+    await delegate.start_write(key)
+    await delegate.write(key, data)
+    await delegate.finish_write(key)
+
+    result = bytearray()
+    async for chunk in delegate.read_generator(key):
+        result.extend(chunk)
+    result = bytes(result)
+    test_case.assertEqual(data, result)
+
+    result = bytearray()
+    async for chunk in delegate.read_generator(
+            key, start=5, end=15):
+        result.extend(chunk)
+    result = bytes(result)
+    test_case.assertEqual(data[5:15], result)
+
+
+async def assert_parallel_file_operations(
+    test_case: unittest.IsolatedAsyncioTestCase,
+    delegate: AbstractFileDelegate
+):
+    key = uuid.uuid1().hex
+    write_started_event = asyncio.Event()
+    write_finished_event = asyncio.Event()
+
+    async def _first_request():
+        # Wait for the write event to start.
+        await delegate.start_write(key)
+        # Introduce a wait here to make sure the other request starts.
+        write_started_event.set()
+        await delegate.write(key, b'a' * 1000)
+        await delegate.write(key, b'b' * 1000)
+        await delegate.finish_write(key)
+        write_finished_event.set()
+
+        result = bytearray()
+        async for chunk in delegate.read_generator(key):
+            result.extend(chunk)
+
+        test_case.assertEqual(2000, len(result))
+        test_case.assertEqual(b'a' * 1000, result[:1000])
+        test_case.assertEqual(b'b' * 1000, result[1000:])
+
+    async def _second_request():
+        res = bytearray()
+        await write_started_event.wait()
+        await write_finished_event.wait()
+        async for chunk in delegate.read_generator(key):
+            test_case.assertTrue(write_finished_event.is_set())
+            # NOTE: Before we start reading back data, this
+            res.extend(chunk)
+
+        test_case.assertEqual(2000, len(res))
+        test_case.assertEqual(b'a' * 1000, res[:1000])
+        test_case.assertEqual(b'b' * 1000, res[1000:])
+
+    req1_fut = asyncio.create_task(_first_request())
+    req2_fut = asyncio.create_task(_second_request())
+
+    await asyncio.gather(req1_fut, req2_fut)
+
+
+#
+# SimpleFileManager Assertions
+#
+async def assert_simple_file_cache_basic(
+    test_case: unittest.IsolatedAsyncioTestCase,
+    delegate: AbstractFileDelegate
+):
+    # Create the file cache to perform some operations.
+    cache = SimpleAsyncFileCache(delegate)
+
+    path = '/basic.txt'
+
+    item = cache.get_item(path)
+    test_case.assertIsNone(item)
+
+    # Now, get or create the item here.
+    item = cache.get_or_create_item(path)
+    test_case.assertIsNotNone(item)
+
+    to_write = b'q' * 128
+    to_write2 = b'w' * 128
+    expected = bytearray()
+    expected.extend(to_write)
+    expected.extend(to_write2)
+    expected = bytes(expected)
+
+    async def _reader():
+        # Fetch the item and start reading. This should work because the
+        # reader should wait for 'finish_write()' to be called.
+        read_item = cache.get_item(path)
+        test_case.assertIsNotNone(read_item)
+
+        data = bytearray()
+        async for chunk in item.read_generator():
+            data.extend(chunk)
+        test_case.assertEqual(expected, bytes(data))
+
+    # Start the readers before the write is even started.
+    reader1 = asyncio.create_task(_reader())
+    reader2 = asyncio.create_task(_reader())
+
+    # 'item' should be some instance of: AsyncCacheItem
+    await item.start_write()
+    await item.write(to_write)
+    await item.write(to_write2)
+    await item.finish_write()
+
+    # Wait for both readers.
+    await asyncio.gather(reader1, reader2)
+
+
+async def assert_simple_file_cache_write_lock(
+    test_case: unittest.IsolatedAsyncioTestCase,
+    delegate: AbstractFileDelegate
+):
+    pass
+
+
+#
+# Test Case Container
+#
+class DelegateContainer(object):
+
+    class MainDelegateTests(unittest.IsolatedAsyncioTestCase):
+
+        def get_delegate(self, temp_dir):
+            raise NotImplementedError(
+                '"get_delegate()" should be overridden!')
+
+        # Test the delegates
+        async def test_basic_file_operations(self):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                delegate = self.get_delegate(temp_dir)
+                await assert_file_delegate_operations(self, delegate)
+
+        async def test_parallel_file_operations(self):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                delegate = self.get_delegate(temp_dir)
+                await assert_parallel_file_operations(self, delegate)
+
+        # Test the SimpleAsyncFileCache operations.
+        async def test_simple_file_cache(self):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                delegate = self.get_delegate(temp_dir)
+                await assert_simple_file_cache_basic(self, delegate)
+
+        async def test_simple_file_cache_write_contention(self):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                delegate = self.get_delegate(temp_dir)
+                await assert_simple_file_cache_write_lock(self, delegate)
+
+
+class MemoryDelegateTest(DelegateContainer.MainDelegateTests):
+
+    def get_delegate(self, temp_dir):
+        return MemoryFileDelegate()
+
+
+class SynchronousFileDelegateTest(DelegateContainer.MainDelegateTests):
+
+    def get_delegate(self, temp_dir):
+        return SynchronousFileDelegate(temp_dir)
+
+
+@unittest.skipIf(
+    not NATIVE_AIO_FILE_DELEGATE_ENABLED,
+    "'aiofile' module not installed; skipping relevant tests."
+)
+class NativeAioFileDelegateTest(DelegateContainer.MainDelegateTests):
+
+    def get_delegate(self, temp_dir):
+        from torncoder.file_util import NativeAioFileDelegate
+
+        return NativeAioFileDelegate(temp_dir)
+
+
+@unittest.skipIf(
+    not THREADED_FILE_DELEGATE_ENABLED,
+    "'aiofiles' module not installed; skipping relevant tests."
+)
+class ThreadedFileDelegateTest(DelegateContainer.MainDelegateTests):
+
+    def get_delegate(self, temp_dir):
+        from torncoder.file_util import ThreadedFileDelegate
+
+        return ThreadedFileDelegate(temp_dir)
 
 
 if __name__ == '__main__':
