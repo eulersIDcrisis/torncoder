@@ -329,62 +329,62 @@ async def assert_parallel_file_operations(
     await asyncio.gather(req1_fut, req2_fut)
 
 
-#
-# SimpleFileManager Assertions
-#
-async def assert_simple_file_cache_basic(
-    test_case: unittest.IsolatedAsyncioTestCase,
-    delegate: AbstractFileDelegate
-):
-    # Create the file cache to perform some operations.
-    cache = SimpleAsyncFileCache(delegate)
+# #
+# # SimpleFileManager Assertions
+# #
+# async def assert_simple_file_cache_basic(
+#     test_case: unittest.IsolatedAsyncioTestCase,
+#     delegate: AbstractFileDelegate
+# ):
+#     # Create the file cache to perform some operations.
+#     cache = SimpleAsyncFileCache(delegate)
 
-    path = '/basic.txt'
+#     path = '/basic.txt'
 
-    item = cache.get_item(path)
-    test_case.assertIsNone(item)
+#     item = cache.get_item(path)
+#     test_case.assertIsNone(item)
 
-    # Now, get or create the item here.
-    item = cache.get_or_create_item(path)
-    test_case.assertIsNotNone(item)
+#     # Now, get or create the item here.
+#     item = cache.get_or_create_item(path)
+#     test_case.assertIsNotNone(item)
 
-    to_write = b'q' * 128
-    to_write2 = b'w' * 128
-    expected = bytearray()
-    expected.extend(to_write)
-    expected.extend(to_write2)
-    expected = bytes(expected)
+#     to_write = b'q' * 128
+#     to_write2 = b'w' * 128
+#     expected = bytearray()
+#     expected.extend(to_write)
+#     expected.extend(to_write2)
+#     expected = bytes(expected)
 
-    async def _reader():
-        # Fetch the item and start reading. This should work because the
-        # reader should wait for 'finish_write()' to be called.
-        read_item = cache.get_item(path)
-        test_case.assertIsNotNone(read_item)
+#     async def _reader():
+#         # Fetch the item and start reading. This should work because the
+#         # reader should wait for 'finish_write()' to be called.
+#         read_item = cache.get_item(path)
+#         test_case.assertIsNotNone(read_item)
 
-        data = bytearray()
-        async for chunk in item.read_generator():
-            data.extend(chunk)
-        test_case.assertEqual(expected, bytes(data))
+#         data = bytearray()
+#         async for chunk in item.read_generator():
+#             data.extend(chunk)
+#         test_case.assertEqual(expected, bytes(data))
 
-    # Start the readers before the write is even started.
-    reader1 = asyncio.create_task(_reader())
-    reader2 = asyncio.create_task(_reader())
+#     # Start the readers before the write is even started.
+#     reader1 = asyncio.create_task(_reader())
+#     reader2 = asyncio.create_task(_reader())
 
-    # 'item' should be some instance of: AsyncCacheItem
-    await item.start_write()
-    await item.write(to_write)
-    await item.write(to_write2)
-    await item.finish_write()
+#     # 'item' should be some instance of: AsyncCacheItem
+#     await item.start_write()
+#     await item.write(to_write)
+#     await item.write(to_write2)
+#     await item.finish_write()
 
-    # Wait for both readers.
-    await asyncio.gather(reader1, reader2)
+#     # Wait for both readers.
+#     await asyncio.gather(reader1, reader2)
 
 
-async def assert_simple_file_cache_write_lock(
-    test_case: unittest.IsolatedAsyncioTestCase,
-    delegate: AbstractFileDelegate
-):
-    pass
+# async def assert_simple_file_cache_write_lock(
+#     test_case: unittest.IsolatedAsyncioTestCase,
+#     delegate: AbstractFileDelegate
+# ):
+#     pass
 
 
 #
@@ -410,15 +410,15 @@ class DelegateContainer(object):
                 await assert_parallel_file_operations(self, delegate)
 
         # Test the SimpleAsyncFileCache operations.
-        async def test_simple_file_cache(self):
-            with tempfile.TemporaryDirectory() as temp_dir:
-                delegate = self.get_delegate(temp_dir)
-                await assert_simple_file_cache_basic(self, delegate)
+        # async def test_simple_file_cache(self):
+        #     with tempfile.TemporaryDirectory() as temp_dir:
+        #         delegate = self.get_delegate(temp_dir)
+        #         await assert_simple_file_cache_basic(self, delegate)
 
-        async def test_simple_file_cache_write_contention(self):
-            with tempfile.TemporaryDirectory() as temp_dir:
-                delegate = self.get_delegate(temp_dir)
-                await assert_simple_file_cache_write_lock(self, delegate)
+        # async def test_simple_file_cache_write_contention(self):
+        #     with tempfile.TemporaryDirectory() as temp_dir:
+        #         delegate = self.get_delegate(temp_dir)
+        #         await assert_simple_file_cache_write_lock(self, delegate)
 
 
 class MemoryDelegateTest(DelegateContainer.MainDelegateTests):

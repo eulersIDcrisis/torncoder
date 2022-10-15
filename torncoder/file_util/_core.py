@@ -22,21 +22,30 @@ class CacheError(Exception):
 
 class AbstractFileDelegate(ABC):
 
+    def generate_internal_key_from_path(self, path):
+        """Generate and return an 'internal_key' for the given key.
+
+        The internal key is the key that this delegate will pass as the 'key'
+        argument for the other operations of this class.
+        """
+        # By default, just return a random path.
+        return uuid.uuid1().hex
+
     @abstractmethod
-    async def start_write(self, key: str):
+    async def start_write(self, internal_key: str):
         pass
 
     @abstractmethod
-    async def write(self, key: str,
+    async def write(self, internal_key: str,
                     data: Union[memoryview, bytes, bytearray]):
         pass
 
     @abstractmethod
-    async def finish_write(self, key: str):
+    async def finish_write(self, internal_key: str):
         pass
 
     @abstractmethod
-    async def read_generator(self, key: str,
+    async def read_generator(self, internal_key: str,
                              start: Optional[int]=None,
                              end: Optional[int]=None):
         pass
@@ -146,7 +155,17 @@ class SimpleFileManager(object):
     delegate.
     """
 
-    def __init__(self, delegate: AbstractFileDelegate):
+    def __init__(
+            self,
+            delegate: AbstractFileDelegate,
+            max_size: Optional[int] =None,
+            max_count: Optional[int] =None):
+        """Create a SimpleFileManager that stores files for the given delegate.
+
+        This tracks the different files stored and permits simple 'vacuum' and
+        quota operations on the resulting files, which are disabled if both
+        'max_size' and 'max_count' are falsey/None.
+        """
         self._delegate = delegate
         # Use an ordered dict for the cache.
         #
@@ -155,12 +174,26 @@ class SimpleFileManager(object):
         self._cache_mapping = OrderedDict()
 
         # Cache status items.
+        self._max_count = max_count
+        self._max_size = max_size
+
+        # Store the current (tracked) size of the file directory.
         self._current_size = 0
 
     @property
     def delegate(self) -> AbstractFileDelegate:
         """Return the underlying delegate for this manager."""
         return self._delegate
+
+    @property
+    def item_count(self):
+        """Return the count of tracked items/files in this manager."""
+        return len(self._cache_mapping)
+
+    @property
+    def byte_count(self):
+        """Return byte count for the tracked items/files in this manager."""
+        return self._current_size
 
     def create_internal_key(self, key: str) -> str:
         """Create an internal_key for a new, future FileInfo object.
@@ -189,16 +222,33 @@ class SimpleFileManager(object):
         """
         old_info = self._cache_mapping.get(key)
         self._cache_mapping[key] = file_info
+        # Update the current size of the cached data.
+        self._current_size += file_info.size
+        if old_info:
+            self._current_size -= old_info.size
+
+        # Return the old FileInfo object as applicable.
         return old_info
 
     async def remove_file_info_async(self, key: str) -> Optional[FileInfo]:
         item = self._cache_mapping.pop(key, None)
         if item:
+            self._current_size -= item.size
             await self.delegate.remove(item.internal_key)
 
     async def vacuum(self):
-        """Vacuum and assert the constraints of the cache by removing items."""
-        pass
+        """Vacuum and assert the constraints of the cache by removing items.
+
+        This is designed to be run at some regular interval.
+        """
+        if self._max_count:
+            while len(self._cache_mapping) > self._max_count:
+                item = self._cache_mapping.popitem(last=True)
+                await self.delegate.remove(item.internal_key)
+        if self._max_size:
+            while self._current_size > self._max_size:
+                item = self._cache_mapping.popitem(last=True)
+                await self.delegate.remove(item.internal_key)
 
     def serialize_listing_to_stream(self, stm):
         """Serialize the current metadata to the given stream."""
