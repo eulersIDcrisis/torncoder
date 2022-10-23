@@ -10,7 +10,7 @@ repository = "https://github.com/eulersIDcrisis/torncoder"
 
 [tool.poetry.dependencies]
 python = ">=3.8,<4"
-tornado = "^6.1"
+tornado = "^6.0"
 aiofiles = {version = "^22.1.0", extras = ["threaded"]}
 aiofile = {version = "^3.8.1", extras = ["aio"]}
 
@@ -18,9 +18,10 @@ aiofile = {version = "^3.8.1", extras = ["aio"]}
 pytest = "^7.1.3"
 coverage = "^6.5.0"
 tox = "^3.26.0"
+httpx = "^0.23.0"
 
 [tool.poetry.scripts]
-torn-file-server = "torncoder.cli.fileserver:start"
+file-cache-server = "torncoder.cli.file_cache_server:start"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

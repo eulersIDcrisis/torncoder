@@ -3,10 +3,14 @@
 Module with miscellaneous functions.
 """
 import re
+import logging
 import asyncio
 import datetime
 import email.utils
 from typing import Optional, Tuple, Any
+
+
+logger = logging.getLogger('torncoder')
 
 
 MULTIPART_FORM_DATA_TYPE = 'multipart/form-data'

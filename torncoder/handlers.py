@@ -4,12 +4,15 @@
 that handle conventional GET/HEAD requests and so forth.
 """
 import re
-from typing import Any
+from tempfile import tempdir
+from typing import Any, Optional, Awaitable, Union
 # Third-party Imports
 from tornado import web
 # Local Imports
-from torncoder.utils import parse_header_date, parse_range_header
-from torncoder.file_util import FileInfo, AbstractFileDelegate
+from torncoder.utils import parse_header_date, parse_range_header, logger
+from torncoder.file_util import (
+    FileInfo, SimpleFileManager, AbstractFileDelegate
+)
 
 
 ETAGS_FROM_IF_NONE_MATCH_REGEX = re.compile(r'\"(?P<etag>.+)\"')
@@ -88,8 +91,72 @@ async def serve_get_from_file_info(
         await req_handler.flush()
 
 
+class UploadFileProxy(object):
+    """Object that helps upload a file to some AbstractFileDelegate."""
+
+    def __init__(self, key: str, delegate: AbstractFileDelegate):
+        self._key = key
+        self._error = None
+        self._delegate = delegate
+        self._is_started = False
+        self._is_finished = False
+
+    async def __aenter__(self):
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, tb):
+        await self.aclose()
+
+    def mark_error(self, exc):
+        """Mark the current upload with an error.
+
+        NOTE: This marks the upload as finished internally.
+        """
+        self._error = exc
+        self._is_finished = True
+
+    async def aclose(self):
+        # Close and remove the file if the delegate started the
+        # write, but did not finish.
+        if self._is_started and not self._is_finished:
+            try:
+                await self._delegate.remove(self._key)
+            except Exception:
+                logger.exception("Error in remove after incomplete upload!")
+        # Always mark the request as finished on a close operation.
+        self._is_finished = True
+
+    async def start(self):
+        await self._delegate.start_write(self._key)
+        self._is_started = True
+
+    async def data_received(
+        self, data: Union[bytes, memoryview, bytearray]
+    ) -> int:
+        try:
+            if not self._error:
+                await self._delegate.write(self._key, data)
+        except Exception as exc:
+            self.mark_error(exc)
+        # Return the length of the data processed, even if we drop it.
+        return len(data)
+
+    async def finish(self):
+        if not self._is_finished:
+            await self._delegate.finish_write(self._key)
+        self._is_finished = True
+
+
+@web.stream_request_body
 class ServeFileHandler(web.RequestHandler):
     """Basic handler that serves files from a file_manager.
+
+    This handler supports the following API by default:
+     - GET: Fetch the current content.
+     - PUT: Create or Update the current content.
+     - DELETE: Remove the current content.
+     - HEAD: Get content Metadata (same as GET without content).
 
     This handler expects exactly one argument to be passed via the
     'path' input. In other words, this route should be used like this:
@@ -101,8 +168,55 @@ class ServeFileHandler(web.RequestHandler):
     ```
     """
 
-    def initialize(self, file_manager=None):
+    def initialize(self, file_manager: SimpleFileManager =None):
         self.file_manager = file_manager
+        self.delegate = file_manager.delegate
+        self._internal_key = None
+        self._error = None
+
+    def send_status(self, status_code, message):
+        self.set_status(status_code)
+        self.write(dict(
+            status_code=status_code, message=message
+        ))
+
+    async def prepare(self):
+        # Parse the path as the first argument.
+        try:
+            path = self.path_kwargs.get('path')
+            if not path:
+                path = self.path_args[0]
+        except Exception:
+            self.send_status(400, "Bad arguments!")
+            return
+
+        # If the request is a PUT, we are likely expecting a request
+        # body, so initialize the file here.
+        if self.request.method.upper() == 'PUT':
+            key = self.delegate.generate_internal_key_from_path(path)
+            await self.delegate.start_write(key)
+            self._internal_key = key
+
+    async def data_received(self, chunk: bytes) -> Optional[Awaitable[None]]:
+        try:
+            # If we are supposed to receive a file and there are no errors,
+            # write the contents to the given key.
+            if self._internal_key and not self._error:
+                await self.delegate.write(self._internal_key, chunk)
+        except Exception as exc:
+            self._error = exc
+
+    async def put(self, path):
+        try:
+            if self._error:
+                self.send_status(400, "Invalid file upload!")
+                return
+            # Finish the write operation.
+            await self.delegate.finish_write(self._internal_key)
+
+            self.send_status(200, "Success")
+        except Exception:
+            self.send_status(500, 'Internal Server Error')
 
     async def get(self, path):
         try:

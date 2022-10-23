@@ -12,39 +12,44 @@ from contextlib import AsyncExitStack
 # AIOFile import
 import aiofile
 # Local Imports
-from torncoder.file_util._core import AbstractFileDelegate, CacheError
+from torncoder.file_util._core import (
+    AbstractFileDelegate, CacheError, FileInfo
+)
 
 
 class NativeAioFileDelegate(AbstractFileDelegate):
 
-    def __init__(self, root_dir):
+    def __init__(self, root_dir: str):
         super(NativeAioFileDelegate, self).__init__()
         self._root_dir = root_dir
 
         self._stream_mapping = dict()
         self._path_mapping = dict()
 
-    async def start_write(self, key):
-        path = os.path.join(self._root_dir, key)
-        stm = await aiofile.async_open(path, 'wb')
-        self._path_mapping[key] = path
+    async def start_write(self, key, headers):
+        internal_key = os.path.join(self._root_dir, key)
+        file_info = FileInfo(key, internal_key)
+        stm = await aiofile.async_open(internal_key, 'wb')
+        self._path_mapping[key] = internal_key
         self._stream_mapping[key] = stm
+        return file_info
 
-    async def write(self, key, data):
-        stm = self._stream_mapping.get(key)
+    async def write(self, file_info, data):
+        stm = self._stream_mapping.get(file_info.key)
         if not stm:
-            raise CacheError('No stream open for key: {}'.format(key))
+            raise CacheError('No stream open for key: {}'.format(
+                file_info.key))
         return await stm.write(data)
 
-    async def finish_write(self, key):
-        stm = self._stream_mapping.get(key)
+    async def finish_write(self, file_info):
+        stm = self._stream_mapping.get(file_info.key)
         if not stm:
-            raise CacheError('No stream open for key: {}'.format(key))
+            raise CacheError('No stream open for key: {}'.format(
+                file_info.key))
         await stm.close()
 
-    async def read_generator(self, key, start=None, end=None):
-        path = os.path.join(self._root_dir, key)
-        async with aiofile.async_open(path, 'rb') as stm:
+    async def read_generator(self, file_info, start=None, end=None):
+        async with aiofile.async_open(file_info.internal_key, 'rb') as stm:
             if start is not None:
                 stm.seek(start)
             else:
@@ -78,6 +83,5 @@ class NativeAioFileDelegate(AbstractFileDelegate):
                     yield chunk[:to_read]
                     return
 
-
-    async def remove(self, key):
+    async def remove(self, file_info):
         pass
