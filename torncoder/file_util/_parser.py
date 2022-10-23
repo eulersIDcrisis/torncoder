@@ -73,6 +73,7 @@ class MultipartFormDataParser(object):
         self._delegate = delegate
         self._boundary = boundary
         self._name = None
+        self._info = None
 
         # Variables to store the current state of the parser.
         self._state = ParserState.PARSE_BOUNDARY_LINE
@@ -127,9 +128,7 @@ class MultipartFormDataParser(object):
                     # whole buffer.
                     data = self._buffer
                     self._buffer = bytearray()
-                    res = self._delegate.write(self._name, data)
-                    if is_awaitable(res):
-                        await res
+                    await self._delegate.write(self._info, data)
 
                     # Return because the whole buffer was written out.
                     return
@@ -143,9 +142,7 @@ class MultipartFormDataParser(object):
                     # the boundary cases.
                     data = self._buffer[:idx]
                     self._buffer = self._buffer[idx:]
-                    res = self._delegate.write(self._name, data)
-                    if is_awaitable(res):
-                        await res
+                    await self._delegate.write(self._info, data)
 
                 # Not enough data (technically) to check against. Wait for
                 # more data to be certain whether the boundary was parsed.
@@ -157,9 +154,7 @@ class MultipartFormDataParser(object):
                 # handle this case more cleanly.
                 if self._buffer.startswith(self._boundary_next):
                     # Mark the current file as finished.
-                    res = self._delegate.finish_write(self._name)
-                    if is_awaitable(res):
-                        await res
+                    await self._delegate.finish_write(self._info)
                     self.change_state(ParserState.PARSE_BOUNDARY_LINE)
                     continue
 
@@ -171,9 +166,7 @@ class MultipartFormDataParser(object):
                     return
 
                 if self._buffer.startswith(self._boundary_end):
-                    res = self._delegate.finish_write(self._name)
-                    if is_awaitable(res):
-                        await res
+                    await self._delegate.finish_write(self._info)
                     self.change_state(ParserState.PARSE_BOUNDARY_LINE)
                     continue
 
@@ -186,9 +179,7 @@ class MultipartFormDataParser(object):
                 else:
                     data = self._buffer[:next_idx]
                     self._buffer = self._buffer[next_idx:]
-                res = self._delegate.write(self._name, data)
-                if is_awaitable(res):
-                    await res
+                await self._delegate.write(self._info, data)
 
                 # Continue and run the check after this update.
                 continue
@@ -248,9 +239,8 @@ class MultipartFormDataParser(object):
                 name = parse_content_name(content_disp)
 
                 # Call the delegate with the new file.
-                res = self._delegate.start_write(name, headers=headers)
-                if is_awaitable(res):
-                    await res
+                self._info = await self._delegate.start_write(
+                    name, headers=headers)
 
                 # Update the buffer and the state.
                 self.change_state(ParserState.PARSE_BODY, name=name)

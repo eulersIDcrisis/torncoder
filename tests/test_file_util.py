@@ -2,17 +2,12 @@
 
 Test Cases for the 'tornproxy.file_util' module.
 """
-import json
 import uuid
 import asyncio
 import unittest
 import tempfile
-from contextlib import AsyncExitStack
 # Third-party Imports
-from tornado import httputil, httpclient, web
-from tornado.testing import (
-    gen_test, AsyncTestCase, AsyncHTTPTestCase
-)
+from tornado import httputil
 # Local Imports
 from torncoder.file_util import (
     # Parser Imports
@@ -348,9 +343,8 @@ a,b
 """
 
 
-class TestMultipartFormDataParser(AsyncTestCase):
+class TestMultipartFormDataParser(unittest.IsolatedAsyncioTestCase):
 
-    @gen_test
     async def test_multipart_form_data(self):
         boundary = b'--boundarything'
 
@@ -386,22 +380,21 @@ class TestMultipartFormDataParser(AsyncTestCase):
                 list(delegate.get_headers('b.csv').get_all()),
                 '"b.csv" header mismatch on slice: {}'.format(i))
             # Assert that the file contents match what is expected.
-            a_data = bytearray()
-            async for chunk in delegate.read_generator('a.txt'):
-                a_data.extend(chunk)
+            a_info = delegate.get_file_info('a.txt')
+            self.assertIsNotNone(a_info)
+            a_data = await delegate.read_into_bytes(a_info)
             self.assertEqual(
                 b'a', a_data,
                 '"a.txt" file contents mismatch on slice: {}'.format(i))
-            b_data = bytearray()
-            async for chunk in delegate.read_generator('b.csv'):
-                b_data.extend(chunk)
+            b_info = delegate.get_file_info('b.csv')
+            self.assertIsNotNone(b_info)
+            b_data = await delegate.read_into_bytes(b_info)
             self.assertEqual(
                 b'col1,col2\na,b\n--boundarythin,thatwasclose\n',
                 b_data,
                 # bytes(delegate.parsed_data['b.csv']),
                 '"b.csv" file contents mismatch on slice: {}'.format(i))
 
-    @gen_test
     async def test_multipart_form_data_async(self):
         # Same test as above, but with async methods for the delegate.
         boundary = b'--boundarything'
@@ -431,11 +424,11 @@ class TestMultipartFormDataParser(AsyncTestCase):
             # Assert the 'headers' match what is expected.
             self.assertEqual(
                 headers_a_txt,
-                list(delegate.parsed_info['a.txt'].get_all()),
+                list(delegate.get_headers('a.txt').get_all()),
                 '"a.txt" header mismatch on slice: {}'.format(i))
             self.assertEqual(
                 headers_b_csv,
-                list(delegate.parsed_info['b.csv']),
+                list(delegate.get_headers('b.csv')),
                 '"b.csv" header mismatch on slice: {}'.format(i))
             # Assert that the file contents match what is expected.
             a_info = delegate.get_file_info('a.txt')

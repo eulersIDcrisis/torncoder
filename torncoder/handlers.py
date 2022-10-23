@@ -85,7 +85,7 @@ async def serve_get_from_file_info(
     else:
         req_handler.set_status(200)
     async for chunk in delegate.read_generator(
-            file_info.internal_key, start=start, end=end):
+            file_info, start=start, end=end):
         # TODO -- How frequently should this await and flush?
         req_handler.write(chunk)
         await req_handler.flush()
@@ -171,7 +171,7 @@ class ServeFileHandler(web.RequestHandler):
     def initialize(self, file_manager: SimpleFileManager =None):
         self.file_manager = file_manager
         self.delegate = file_manager.delegate
-        self._internal_key = None
+        self._info = None
         self._error = None
 
     def send_status(self, status_code, message):
@@ -193,16 +193,14 @@ class ServeFileHandler(web.RequestHandler):
         # If the request is a PUT, we are likely expecting a request
         # body, so initialize the file here.
         if self.request.method.upper() == 'PUT':
-            key = self.delegate.generate_internal_key_from_path(path)
-            await self.delegate.start_write(key)
-            self._internal_key = key
+            self._info = await self.delegate.start_write(path, {})
 
-    async def data_received(self, chunk: bytes) -> Optional[Awaitable[None]]:
+    async def data_received(self, chunk: bytes):
         try:
             # If we are supposed to receive a file and there are no errors,
             # write the contents to the given key.
-            if self._internal_key and not self._error:
-                await self.delegate.write(self._internal_key, chunk)
+            if self._info and not self._error:
+                await self.delegate.write(self._info, chunk)
         except Exception as exc:
             self._error = exc
 
@@ -212,7 +210,7 @@ class ServeFileHandler(web.RequestHandler):
                 self.send_status(400, "Invalid file upload!")
                 return
             # Finish the write operation.
-            await self.delegate.finish_write(self._internal_key)
+            await self.delegate.finish_write(self._info)
 
             self.send_status(200, "Success")
         except Exception:
@@ -220,14 +218,14 @@ class ServeFileHandler(web.RequestHandler):
 
     async def get(self, path):
         try:
-            item = self.file_manager.get_file_info(path)
-            if not item:
+            info = self.file_manager.get_file_info(path)
+            if not info:
                 self.set_status(404)
                 self.write(dict(code=404, message="File not found!"))
                 return
             # Proxy the request handling to the generalized call.
             await serve_get_from_file_info(
-                self.file_manager.delegate, item, self,
+                self.file_manager.delegate, info, self,
                 head_only=False)
         except Exception:
             self.set_status(500)
@@ -235,14 +233,14 @@ class ServeFileHandler(web.RequestHandler):
 
     async def head(self, path):
         try:
-            item = self.file_manager.get_file_info(path)
-            if not item:
+            info = self.file_manager.get_file_info(path)
+            if not info:
                 self.set_status(404)
                 self.write(dict(code=404, message="File not found!"))
                 return
             # Proxy the request handling to the generalized call.
             await serve_get_from_file_info(
-                self.file_manager.delegate, item, self,
+                self.file_manager.delegate, info, self,
                 head_only=True)
         except Exception:
             self.set_status(500)

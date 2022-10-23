@@ -342,6 +342,7 @@ class MemoryFileDelegate(AbstractFileDelegate):
         self._stream_mapping = {}
         self._data_mapping = {}
         self._header_mapping = {}
+        self._info_mapping = {}
 
     @property
     def keys(self):
@@ -349,6 +350,9 @@ class MemoryFileDelegate(AbstractFileDelegate):
 
     def get_file_info(self, key: str) -> Optional[FileInfo]:
         return self._info_mapping.get(key)
+
+    def get_headers(self, key: str) -> Optional[Mapping[str, str]]:
+        return self._header_mapping.get(key)
 
     # AbstractFileDelegate Overrides
     async def start_write(self, key: str, headers: Mapping[str, str]):
@@ -359,7 +363,7 @@ class MemoryFileDelegate(AbstractFileDelegate):
         internal_key = key
         # Parse the headers for FileInfo types?
         info = FileInfo(key, internal_key)
-        self._header_mapping[key] = info
+        self._info_mapping[key] = info
         return info
 
     async def write(self, file_info: FileInfo,
@@ -393,6 +397,9 @@ class MemoryFileDelegate(AbstractFileDelegate):
 
     async def remove(self, file_info: FileInfo):
         self._data_mapping.pop(file_info.key, None)
+        self._stream_mapping.pop(file_info.key, None)
+        self._info_mapping.pop(file_info.key, None)
+        self._header_mapping.pop(file_info.key, None)
 
 
 class SynchronousFileDelegate(AbstractFileDelegate):
