@@ -8,6 +8,7 @@ operations and different cache types.
 import os
 import io
 import uuid
+import hashlib
 from abc import abstractmethod, ABC
 from collections import OrderedDict
 from datetime import datetime
@@ -27,7 +28,7 @@ class FileInfo(object):
 
     def __init__(self, key: str, internal_key: str =None,
                  last_modified: Optional[datetime] =None,
-                 etag: Optional[str] =None, size: Optional[int] =None,
+                 e_tag: Optional[str] =None, size: Optional[int] =None,
                  content_type: str ='application/octet-stream',
                  metadata=None):
         # Store the delegate to proxy how the data is written to file.
@@ -93,7 +94,7 @@ class FileInfo(object):
         return self._size
 
     @property
-    def etag(self):
+    def e_tag(self):
         """Return the ETag (unique identifier) for the file.
 
         The delegate can decide how to set this if they so choose.
@@ -105,8 +106,19 @@ class FileInfo(object):
         return dict(
             key=self.key, internal_key=self.internal_key,
             content_type=self.content_type, size=self.size,
-            etag=self.etag
+            etag=self.e_tag
         )
+
+
+def generate_path(path: str, key_level: int=0):
+    path = path.lstrip('/')
+    if key_level <= 0:
+        return path
+    if isinstance(path, str):
+        path = path.encode('utf-8')
+    if key_level == 1:
+        return '{}/{}'.format(path[:2], path[2:])
+    return '{}/{}/{}'.format(path[:2], path[2:4], path[4:])
 
 
 class AbstractFileDelegate(ABC):

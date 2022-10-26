@@ -18,15 +18,14 @@ from typing import Any
 # Third-party Imports
 from tornado import web, ioloop, httpserver
 # Local Imports
+from torncoder.utils import logger
 from torncoder.file_util import (
-    SimpleFileManager, SynchronousFileDelegate, FileInfo
+    NATIVE_AIO_FILE_DELEGATE_ENABLED, SimpleFileManager, SynchronousFileDelegate, FileInfo
 )
 from torncoder.handlers import (
-    serve_get_from_file_info
+    serve_get_from_file_info,
+    ServeFileHandler
 )
-
-
-logger = logging.getLogger()
 
 
 class BaseHandler(web.RequestHandler):
@@ -174,16 +173,37 @@ class FileUploadHandler(BaseHandler):
 
 
 def start():
-    parser = argparse.ArgumentParser(description="Basic File server")
+    parser = argparse.ArgumentParser(description=(
+        "HTTP server designed to serve files. It can operate either as a "
+        "cache with a simple API, or it can serve static content from some "
+        "directory."
+    ))
     parser.add_argument('--port', '-p', type=int, default=7070, help=(
         'Port to listen on.'
     ))
-    parser.add_argument('--cache-dir', '-c', default=None, help=(
-        'Directory to use for the cache.'
+    parser.add_argument('--cache-dir', '-d', default=None, help=(
+        'Root directory to use for the cache.'
     ))
+    parser.add_argument('--key-level', '-k', type=int, default=0)
+    parser.add_argument('--max-count', '-c', type=int, default=-1, help=(
+        'Limit the maximum number of files in the cache. If negative, '
+        'assume unlimited.'
+    ))
+    parser.add_argument('--max-size', '-s', type=int, default=None, help=(
+        'Limit the total combined size of the files in the cache. If '
+        'negative, assume unlimited (up to whatever the OS allows).'
+    ))
+    parser.add_argument('--max-entry-size', '-m', type=int, default=-1,
+        help=('Maximum size for a single entry. If negative, assume '
+              'unlimited'))
     parser.add_argument('--verbose', '-v', action='count', default=0, help=(
         'Increase verbosity. This option stacks for increasing verbosity.'
     ))
+    parser.add_argument('--use-engine', help=(
+        'Use the given engine when serving files.'),
+        choices=['aio', 'threaded', 'memory', 'synchronous'],
+        default='synchronous')
+
     options = parser.parse_args()
     # Parse the logging options first.
     logger.setLevel(logging.INFO)
@@ -204,10 +224,14 @@ def start():
     file_manager = SimpleFileManager(delegate)
     context = dict(file_manager=file_manager)
     app = web.Application([
-        (r'/data/(?P<path>.+)', FileInfoHandler, context),
-        (r'/upload/(?P<path>.+)', FileUploadHandler, context),
-        (r'.*', BaseHandler),
+        (r'/(?P<path>.+)', ServeFileHandler, context),
+        (r'.*', BaseHandler)
     ])
+    # app = web.Application([
+    #     (r'/data/(?P<path>.+)', FileInfoHandler, context),
+    #     (r'/upload/(?P<path>.+)', FileUploadHandler, context),
+    #     (r'.*', BaseHandler),
+    # ])
     server = httpserver.HTTPServer(app)
     server.listen(port)
     server.start()

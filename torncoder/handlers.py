@@ -5,9 +5,10 @@ that handle conventional GET/HEAD requests and so forth.
 """
 import re
 from tempfile import tempdir
+from contextlib import AsyncExitStack
 from typing import Any, Optional, Awaitable, Union
 # Third-party Imports
-from tornado import web
+from tornado import web, ioloop
 # Local Imports
 from torncoder.utils import parse_header_date, parse_range_header, logger
 from torncoder.file_util import (
@@ -20,7 +21,7 @@ ETAGS_FROM_IF_NONE_MATCH_REGEX = re.compile(r'\"(?P<etag>.+)\"')
 
 
 def check_if_304(file_info, headers):
-    if file_info.etag:
+    if file_info.e_tag:
         etag_values = headers.get('If-None-Match', '')
         if etag_values:
             matching_etags = ETAGS_FROM_IF_NONE_MATCH_REGEX.findall(
@@ -52,8 +53,8 @@ async def serve_get_from_file_info(
 
     # Set these headers regardless of anything since they pertain to the
     # content directly.
-    if file_info.etag:
-        req_handler.set_header('ETag', file_info.etag)
+    if file_info.e_tag:
+        req_handler.set_header('ETag', file_info.e_tag)
     if file_info.last_modified:
         req_handler.set_header('Last-Modified', file_info.last_modified)
     if file_info.content_type:
@@ -173,12 +174,27 @@ class ServeFileHandler(web.RequestHandler):
         self.delegate = file_manager.delegate
         self._info = None
         self._error = None
+        self._exit_stack = AsyncExitStack()
 
     def send_status(self, status_code, message):
         self.set_status(status_code)
         self.write(dict(
             status_code=status_code, message=message
         ))
+
+    def on_finish(self):
+        if self._exit_stack:
+            exit_stack = self._exit_stack
+            ioloop.IOLoop().current().add_callback(
+                exit_stack.aclose)
+            self._exit_stack = None
+
+    def on_connection_close(self):
+        if self._exit_stack:
+            exit_stack = self._exit_stack
+            ioloop.IOLoop().current().add_callback(
+                exit_stack.aclose)
+            self._exit_stack = None
 
     async def prepare(self):
         # Parse the path as the first argument.
@@ -210,8 +226,12 @@ class ServeFileHandler(web.RequestHandler):
                 self.send_status(400, "Invalid file upload!")
                 return
             # Finish the write operation.
-            await self.delegate.finish_write(self._info)
+            info = self._info
+            await self.delegate.finish_write(info)
 
+            old_info = self.file_manager.set_file_info(info.key, info)
+            if old_info:
+                await self.delegate.remove(old_info)
             self.send_status(200, "Success")
         except Exception:
             self.send_status(500, 'Internal Server Error')
