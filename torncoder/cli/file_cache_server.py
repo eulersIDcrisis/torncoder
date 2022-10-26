@@ -20,7 +20,9 @@ from tornado import web, ioloop, httpserver
 # Local Imports
 from torncoder.utils import logger
 from torncoder.file_util import (
-    NATIVE_AIO_FILE_DELEGATE_ENABLED, SimpleFileManager, SynchronousFileDelegate, FileInfo
+    NATIVE_AIO_FILE_DELEGATE_ENABLED, SimpleFileManager,
+    SynchronousFileDelegate, FileInfo, get_available_delegate_types,
+    create_delegate
 )
 from torncoder.handlers import (
     serve_get_from_file_info,
@@ -199,10 +201,16 @@ def start():
     parser.add_argument('--verbose', '-v', action='count', default=0, help=(
         'Increase verbosity. This option stacks for increasing verbosity.'
     ))
+    # Dynamically determine the available choices.
+    engines = get_available_delegate_types()
+    if 'synchronous' in engines:
+        default_engine = 'synchronous'
+    else:
+        default_engine = engines[0]
+
     parser.add_argument('--use-engine', help=(
         'Use the given engine when serving files.'),
-        choices=['aio', 'threaded', 'memory', 'synchronous'],
-        default='synchronous')
+        choices=engines, default=default_engine)
 
     options = parser.parse_args()
     # Parse the logging options first.
