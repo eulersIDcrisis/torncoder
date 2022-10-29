@@ -1,38 +1,22 @@
-"""upload.py.
+"""_parser.py.
 
-Module that handles file uploads and streaming requests.
+Module for handling file request parsing.
 """
 import re
-import abc
 import enum
-import asyncio
 import warnings
-# Third-party imports.
+# Third-party Imports
 from tornado.httputil import HTTPHeaders
-
-
-MULTIPART_FORM_DATA_TYPE = 'multipart/form-data'
-"""Constant storing the 'multipart/form-data' content type."""
+# Local Imports
+from torncoder.utils import (
+    MULTIPART_FORM_DATA_TYPE,
+    parse_content_name
+)
+from torncoder.file_util._core import AbstractFileDelegate
 
 
 BOUNDARY_REGEX = re.compile(r'boundary="?(?P<boundary>[^"]+)"?')
 """Regex to match the boundary option."""
-
-
-NAME_REGEX = re.compile(r'name="?(?P<name>[^"]+)"?')
-"""Regex to match the name field."""
-
-
-def _parse_content_name(content_disp):
-    for field in content_disp.split(';'):
-        m = NAME_REGEX.search(field)
-        if m:
-            return m.group('name')
-    raise ValueError('No "name" field found in Content-Disposition!')
-
-
-def _is_awaitable(obj):
-    return asyncio.isfuture(obj) or asyncio.iscoroutine(obj)
 
 
 class ParserState(enum.Enum):
@@ -80,7 +64,7 @@ class MultipartFormDataParser(object):
         raise ValueError("Required 'boundary' option not found in header!")
 
 
-    def __init__(self, delegate, boundary):
+    def __init__(self, delegate: AbstractFileDelegate, boundary: str):
         # Be nice and decode the boundary if it is a bytes object.
         if isinstance(boundary, bytes):
             boundary = boundary.decode('utf-8')
@@ -88,6 +72,7 @@ class MultipartFormDataParser(object):
         self._delegate = delegate
         self._boundary = boundary
         self._name = None
+        self._info = None
 
         # Variables to store the current state of the parser.
         self._state = ParserState.PARSE_BOUNDARY_LINE
@@ -142,9 +127,7 @@ class MultipartFormDataParser(object):
                     # whole buffer.
                     data = self._buffer
                     self._buffer = bytearray()
-                    res = self._delegate.file_data_received(self._name, data)
-                    if _is_awaitable(res):
-                        await res
+                    await self._delegate.write(self._info, data)
 
                     # Return because the whole buffer was written out.
                     return
@@ -158,9 +141,7 @@ class MultipartFormDataParser(object):
                     # the boundary cases.
                     data = self._buffer[:idx]
                     self._buffer = self._buffer[idx:]
-                    res = self._delegate.file_data_received(self._name, data)
-                    if _is_awaitable(res):
-                        await res
+                    await self._delegate.write(self._info, data)
 
                 # Not enough data (technically) to check against. Wait for
                 # more data to be certain whether the boundary was parsed.
@@ -172,9 +153,7 @@ class MultipartFormDataParser(object):
                 # handle this case more cleanly.
                 if self._buffer.startswith(self._boundary_next):
                     # Mark the current file as finished.
-                    res = self._delegate.finish_file(self._name)
-                    if _is_awaitable(res):
-                        await res
+                    await self._delegate.finish_write(self._info)
                     self.change_state(ParserState.PARSE_BOUNDARY_LINE)
                     continue
 
@@ -186,9 +165,7 @@ class MultipartFormDataParser(object):
                     return
 
                 if self._buffer.startswith(self._boundary_end):
-                    res = self._delegate.finish_file(self._name)
-                    if _is_awaitable(res):
-                        await res
+                    await self._delegate.finish_write(self._info)
                     self.change_state(ParserState.PARSE_BOUNDARY_LINE)
                     continue
 
@@ -201,9 +178,7 @@ class MultipartFormDataParser(object):
                 else:
                     data = self._buffer[:next_idx]
                     self._buffer = self._buffer[next_idx:]
-                res = self._delegate.file_data_received(self._name, data)
-                if _is_awaitable(res):
-                    await res
+                await self._delegate.write(self._info, data)
 
                 # Continue and run the check after this update.
                 continue
@@ -260,12 +235,11 @@ class MultipartFormDataParser(object):
                 self._buffer = self._buffer[idx + 4:]
                 headers = HTTPHeaders.parse(data)
                 content_disp = headers.get('Content-Disposition', '')
-                name = _parse_content_name(content_disp)
+                name = parse_content_name(content_disp)
 
                 # Call the delegate with the new file.
-                res = self._delegate.start_new_file(name, headers)
-                if _is_awaitable(res):
-                    await res
+                self._info = await self._delegate.start_write(
+                    name, headers=headers)
 
                 # Update the buffer and the state.
                 self.change_state(ParserState.PARSE_BODY, name=name)
@@ -276,7 +250,7 @@ class MultipartFormDataParser(object):
                 if len(self._buffer) > 0:
                     # WARNING: Data is left in the buffer when we should be
                     # finished...
-                    warning.warn("Finished with non-empty buffer ({} bytes "
+                    warnings.warn("Finished with non-empty buffer ({} bytes "
                                  "remaining).".format(len(self._buffer)))
 
                 # Even if there is data remaining, we should exit the loop.
