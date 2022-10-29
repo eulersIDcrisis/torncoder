@@ -333,7 +333,7 @@ MULTIPART_DATA = b"""----boundarything\r
 Content-Disposition: form-data; name="a.txt"\r
 \r
 a----boundarything\r
-Content-Disposition: form-data; name=b.csv"\r
+Content-Disposition: form-data; name="b.csv"\r
 Content-Type: text/csv\r
 \r
 col1,col2
@@ -352,9 +352,9 @@ class TestMultipartFormDataParser(unittest.IsolatedAsyncioTestCase):
             'Content-Disposition': 'form-data; name="a.txt"',
         }).get_all())
         headers_b_csv = list(httputil.HTTPHeaders({
-            'Content-Disposition': 'form-data; name=b.csv',
-            'Content-Type': 'text/csv;'
-        }))
+            'Content-Disposition': 'form-data; name="b.csv"',
+            'Content-Type': 'text/csv'
+        }).get_all())
 
         # Test all possible splits and chunks of the given data. This will
         # verify the parser with all possible corner cases.

@@ -11,13 +11,18 @@ import uuid
 import hashlib
 from abc import abstractmethod, ABC
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timezone
 # Typing import
 from typing import AsyncGenerator, Generator, Mapping, Union, Optional
+
+from torncoder.utils import parse_header_date
 # Local Imports
 
 # Typing Helpers
 DataContent = Union[bytes, bytearray, memoryview]
+
+
+DEFAULT_CONTENT_TYPE = 'application/octet-stream'
 
 
 class CacheError(Exception):
@@ -26,10 +31,31 @@ class CacheError(Exception):
 
 class FileInfo(object):
 
+    @classmethod
+    def from_http_headers(
+            cls, key: str, internal_key: str=None,
+            headers: Mapping[str, str]=None):
+        content_type = headers.get(
+            'Content-Type', DEFAULT_CONTENT_TYPE)
+        e_tag = headers.get('ETag')
+        last_modified_str = headers.get('Last-Modified')
+        if last_modified_str:
+            last_modified = parse_header_date(last_modified_str)
+        else:
+            last_modified = None
+        
+        size = headers.get('Content-Length', -1)
+        size = int(size) if size else None
+
+        return cls(
+            key, internal_key, last_modified=last_modified, e_tag=e_tag,
+            size=size, content_type=content_type
+        )
+
     def __init__(self, key: str, internal_key: str =None,
                  last_modified: Optional[datetime] =None,
                  e_tag: Optional[str] =None, size: Optional[int] =None,
-                 content_type: str ='application/octet-stream',
+                 content_type: str =DEFAULT_CONTENT_TYPE,
                  metadata=None):
         # Store the delegate to proxy how the data is written to file.
         self._key = key
@@ -38,10 +64,10 @@ class FileInfo(object):
         self._internal_key = internal_key
         # Store the access times for this field.
         self._created_at = datetime.utcnow()
-        self._last_modified = datetime.utcnow()
+        self._last_modified = last_modified or datetime.utcnow()
         self._last_accessed = datetime.utcnow()
         self._content_type = content_type
-        self._etag = None
+        self._etag = e_tag
         # Also store additional (custom) metadata here.
         self._metadata = metadata if metadata else {}
         # Store the size of the file.
@@ -215,6 +241,23 @@ class AbstractFileDelegate(ABC):
         return result
 
 
+class StaticFileManager(object):
+    """File Manager for serving static content.
+
+    This manager will serve content that is assumed to be static for the
+    duration of the program; this will cache various parameters when serving
+    these files as appropriate.
+    """
+
+    def __init__(self):
+        pass
+
+    @property
+    def delegate(self) -> AbstractFileDelegate:
+        """Return the delegate for this manager."""
+        return self._delegate
+
+
 # Constant defining the number of bytes in one gigabyte.
 ONE_GIGABYTE = 2 ** 30
 ONE_HOUR = 60 * 60
@@ -236,7 +279,7 @@ class SimpleFileManager(object):
     def __init__(
             self,
             delegate: AbstractFileDelegate,
-            max_entry_size: int =ONE_GIGABYTE,
+            max_entry_size: Optional[int] =None,
             max_cache_size: Optional[int] =None,
             max_cache_count: Optional[int] =None):
         """Create a SimpleFileManager that stores files for the given delegate.
@@ -280,25 +323,15 @@ class SimpleFileManager(object):
         """Return the maximum number of bytes for a given file."""
         return self._max_file_size
 
-    def preload(
-        self, file_info_generator: Generator[FileInfo, None, None]
-    ) -> None:
-        """Preload the cache using the given generator."""
-        self._current_size = 0
-        for info in file_info_generator:
-            self._current_size += info.size
-            self._cache_mapping[info.key] = info
+    def initialize(self):
+        pass
 
-    def create_internal_key(self, key: str) -> str:
-        """Create an internal_key for a new, future FileInfo object.
+    def close(self):
+        """Close this SimpleFileManager.
 
-        This internal key is the _actual_ path to use for the file.
-        By default, this will just be the original key, but different
-        delegates might be better suited to handle different paths.
+        NOTE: This will write out the current contents
         """
-        return uuid.uuid1().hex
-        # Return the original key.
-        return key.lstrip('/')
+        pass
 
     def get_file_info(self, key: str) -> Optional[FileInfo]:
         """Return the FileInfo for the given key.
@@ -324,11 +357,11 @@ class SimpleFileManager(object):
         # Return the old FileInfo object as applicable.
         return old_info
 
-    async def remove_file_info_async(self, key: str) -> Optional[FileInfo]:
-        item = self._cache_mapping.pop(key, None)
+    async def remove_file_info_async(self, file_info: FileInfo) -> Optional[FileInfo]:
+        item = self._cache_mapping.pop(file_info.key, None)
         if item:
             self._current_size -= item.size
-            await self.delegate.remove(item.internal_key)
+            await self.delegate.remove(item)
 
     async def vacuum(self):
         """Vacuum and assert the constraints of the cache by removing items.
@@ -374,7 +407,7 @@ class MemoryFileDelegate(AbstractFileDelegate):
         # internal_key as the key.
         internal_key = key
         # Parse the headers for FileInfo types?
-        info = FileInfo(key, internal_key)
+        info = FileInfo.from_http_headers(key, internal_key, headers)
         self._info_mapping[key] = info
         return info
 
@@ -426,7 +459,7 @@ class SynchronousFileDelegate(AbstractFileDelegate):
         self, key: str, headers: Mapping[str, str]
     ) -> FileInfo:
         internal_key = os.path.join(self._root_path, key)
-        info = FileInfo(key, internal_key)
+        info = FileInfo.from_http_headers(key, internal_key, headers)
         self._stream_mapping[key] = open(internal_key, 'wb')
         # self._path_mapping[key] = path
         return info

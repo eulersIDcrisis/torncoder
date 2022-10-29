@@ -10,25 +10,34 @@ from typing import Any, Optional, Awaitable, Union
 # Third-party Imports
 from tornado import web, ioloop
 # Local Imports
-from torncoder.utils import parse_header_date, parse_range_header, logger
+from torncoder.utils import (
+    parse_header_date, parse_range_header, logger
+)
 from torncoder.file_util import (
     FileInfo, SimpleFileManager, AbstractFileDelegate
 )
 
 
-ETAGS_FROM_IF_NONE_MATCH_REGEX = re.compile(r'\"(?P<etag>.+)\"')
-"""Regex that should map the 'If-None-Match' header to a list of ETags."""
+ETAGS_FROM_IF_NONE_MATCH_REGEX = re.compile(r'\"(?P<etag>.+?)\",?')
+"""Regex that should map the 'If-None-Match' header to a list of ETags.
+
+Like most regexes, this one is a pain :/ It uses '.+?' where it does to avoid
+greedy matches as well as an optional ',' character at the end to properly
+split multiple match candidates from the header.
+"""
 
 
-def check_if_304(file_info, headers):
+def check_if_304(file_info, headers) -> bool:
     if file_info.e_tag:
         etag_values = headers.get('If-None-Match', '')
         if etag_values:
             matching_etags = ETAGS_FROM_IF_NONE_MATCH_REGEX.findall(
                 etag_values
             )
+            expected_match = file_info.e_tag.strip('"')
             # Check if the file_etag matches one of the values.
-            if file_info.etag in matching_etags:
+            # If there is a match, we should return 304.
+            if expected_match in matching_etags:
                 return True
     # After the ETag check, check Last-Modified.
     # NOTE: According to the spec, the ETag checks should take priority
@@ -37,9 +46,36 @@ def check_if_304(file_info, headers):
         modified_since = headers.get('If-Modified-Since', '')
         if modified_since:
             modified_dt = parse_header_date(modified_since)
-            if modified_dt <= file_info.last_modified:
+            if modified_dt >= file_info.last_modified:
                 return True
     return False
+
+
+def check_if_412(curr_file_info: FileInfo, headers) -> bool:
+    """Check if the current headers should return a 412.
+
+    This is supposed to check if the current FileInfo matches what is
+    requested by the given headers; if not, then the request should
+    return a 412. The details are described somewhat in the MDN docs here:
+    https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/412
+    """
+    e_tag = headers.get('If-Match')
+    if e_tag:
+        # The requested ETag does not match the ETag of the current
+        # entry; this should imply a 412.
+        if curr_file_info.e_tag and curr_file_info.e_tag != e_tag:
+            return True
+
+
+def set_headers_for_file_info(
+    req_handler: web.RequestHandler, file_info: FileInfo
+) -> None:
+    if file_info.e_tag:
+        req_handler.set_header('ETag', file_info.e_tag)
+    if file_info.last_modified:
+        req_handler.set_header('Last-Modified', file_info.last_modified)
+    if file_info.content_type:
+        req_handler.set_header('Content-Type', file_info.content_type)
 
 
 async def serve_get_from_file_info(
@@ -53,12 +89,7 @@ async def serve_get_from_file_info(
 
     # Set these headers regardless of anything since they pertain to the
     # content directly.
-    if file_info.e_tag:
-        req_handler.set_header('ETag', file_info.e_tag)
-    if file_info.last_modified:
-        req_handler.set_header('Last-Modified', file_info.last_modified)
-    if file_info.content_type:
-        req_handler.set_header('Content-Type', file_info.content_type)
+    set_headers_for_file_info(req_handler, file_info)
     # This should support partial requests, so add the Accept-Ranges header.
     req_handler.set_header('Accept-Ranges', 'bytes')
 
@@ -71,6 +102,12 @@ async def serve_get_from_file_info(
     # content body and just exit.
     if head_only:
         req_handler.set_status(204)
+        # Cryptic: We need to flush() to explicitly write out the headers
+        # that were set above; otherwise, tornado might try and override
+        # some of these headers like Content-Length or similar since it
+        # never received any content to actually write and would write
+        # headers implying an empty response.
+        await req_handler.flush()
         return
 
     # Support handling 'Range' header requests as well.
@@ -80,7 +117,19 @@ async def serve_get_from_file_info(
         start, end = parse_range_header(content_range)
     else:
         start, end = None, None
-    partial_response = not(start is None and end is None)
+    if end is None:
+        if start is None:
+            partial_response = False
+        elif start == 0:
+            # NOTE: If given a range like: 0-, then just assume a 200
+            # status code instead, since this is basically asking for
+            # the full content anyway.
+            partial_response = False
+        else:
+            partial_response = True
+    else:
+        # Otherwise, we are stopping early, so the request is partial.
+        partial_response = True
     if partial_response:
         req_handler.set_status(206)
     else:
@@ -149,92 +198,22 @@ class UploadFileProxy(object):
         self._is_finished = True
 
 
-@web.stream_request_body
-class ServeFileHandler(web.RequestHandler):
+class ReadonlyFileHandler(web.RequestHandler):
     """Basic handler that serves files from a file_manager.
 
     This handler supports the following API by default:
      - GET: Fetch the current content.
-     - PUT: Create or Update the current content.
-     - DELETE: Remove the current content.
      - HEAD: Get content Metadata (same as GET without content).
-
-    This handler expects exactly one argument to be passed via the
-    'path' input. In other words, this route should be used like this:
-    ```
-    fm = SimpleFileManager()  # Or whatever
-    app = web.Application([
-        (r'/data/(?P<path>.+)', ServeFileHandler, dict(file_manager=fm)),
-    ])
-    ```
     """
 
-    def initialize(self, file_manager: SimpleFileManager =None):
+    def initialize(self, file_manager: SimpleFileManager=None):
         self.file_manager = file_manager
-        self.delegate = file_manager.delegate
-        self._info = None
-        self._error = None
-        self._exit_stack = AsyncExitStack()
 
     def send_status(self, status_code, message):
         self.set_status(status_code)
         self.write(dict(
             status_code=status_code, message=message
         ))
-
-    def on_finish(self):
-        if self._exit_stack:
-            exit_stack = self._exit_stack
-            ioloop.IOLoop().current().add_callback(
-                exit_stack.aclose)
-            self._exit_stack = None
-
-    def on_connection_close(self):
-        if self._exit_stack:
-            exit_stack = self._exit_stack
-            ioloop.IOLoop().current().add_callback(
-                exit_stack.aclose)
-            self._exit_stack = None
-
-    async def prepare(self):
-        # Parse the path as the first argument.
-        try:
-            path = self.path_kwargs.get('path')
-            if not path:
-                path = self.path_args[0]
-        except Exception:
-            self.send_status(400, "Bad arguments!")
-            return
-
-        # If the request is a PUT, we are likely expecting a request
-        # body, so initialize the file here.
-        if self.request.method.upper() == 'PUT':
-            self._info = await self.delegate.start_write(path, {})
-
-    async def data_received(self, chunk: bytes):
-        try:
-            # If we are supposed to receive a file and there are no errors,
-            # write the contents to the given key.
-            if self._info and not self._error:
-                await self.delegate.write(self._info, chunk)
-        except Exception as exc:
-            self._error = exc
-
-    async def put(self, path):
-        try:
-            if self._error:
-                self.send_status(400, "Invalid file upload!")
-                return
-            # Finish the write operation.
-            info = self._info
-            await self.delegate.finish_write(info)
-
-            old_info = self.file_manager.set_file_info(info.key, info)
-            if old_info:
-                await self.delegate.remove(old_info)
-            self.send_status(200, "Success")
-        except Exception:
-            self.send_status(500, 'Internal Server Error')
 
     async def get(self, path):
         try:
@@ -265,3 +244,120 @@ class ServeFileHandler(web.RequestHandler):
         except Exception:
             self.set_status(500)
             self.write(dict(code=500, message="Internal server error!"))
+
+
+@web.stream_request_body
+class ServeFileHandler(ReadonlyFileHandler):
+    """Basic handler that serves files from a file_manager.
+
+    Unlike 'ReadonlyFileHandler', this _also_ supports PUT and DELETE
+    requests to update and remove the content of files.
+
+    This handler supports the following API by default:
+     - GET: Fetch the current content.
+     - HEAD: Get content Metadata (same as GET without content).
+     - PUT: Create or Update the current content.
+     - DELETE: Remove the current content.
+
+    This handler expects exactly one argument to be passed via the
+    'path' input. In other words, this route should be used like this:
+    ```
+    fm = SimpleFileManager()  # Or whatever
+    app = web.Application([
+        (r'/data/(?P<path>.+)', ServeFileHandler, dict(file_manager=fm)),
+    ])
+    ```
+    """
+
+    def initialize(self, file_manager: SimpleFileManager =None):
+        self.file_manager = file_manager
+        self.delegate = file_manager.delegate
+        self._info = None
+        self._error = None
+        self._exit_stack = AsyncExitStack()
+
+    def on_finish(self):
+        if self._exit_stack:
+            exit_stack = self._exit_stack
+            ioloop.IOLoop().current().add_callback(
+                exit_stack.aclose)
+            self._exit_stack = None
+
+    def on_connection_close(self):
+        if self._exit_stack:
+            exit_stack = self._exit_stack
+            ioloop.IOLoop().current().add_callback(
+                exit_stack.aclose)
+            self._exit_stack = None
+
+    async def prepare(self):
+        # Parse the path as the first argument.
+        try:
+            path = self.path_kwargs.get('path')
+            if not path:
+                path = self.path_args[0]
+        except Exception:
+            self.send_status(400, "Bad arguments!")
+            return
+
+        # If the request is a PUT, we are likely expecting a request
+        # body, so initialize the file here.
+        if self.request.method.upper() == 'PUT':
+            curr_info = self.file_manager.get_file_info(path)
+            if curr_info:
+                if check_if_412(curr_info, self.request.headers):
+                    self.send_status(412, "Precondition failed!")
+                    return
+            self._info = await self.delegate.start_write(
+                path, self.request.headers)
+        else:
+            # Fetch the current file info.
+            self._info = self.file_manager.get_file_info(path)
+
+    async def data_received(self, chunk: bytes):
+        try:
+            # If we are supposed to receive a file and there are no errors,
+            # write the contents to the given key.
+            if self._info and not self._error:
+                await self.delegate.write(self._info, chunk)
+        except Exception as exc:
+            self._error = exc
+
+    async def put(self, path):
+        try:
+            if self._error:
+                self.send_status(400, "Invalid file upload!")
+                return
+            # Finish the write operation.
+            info = self._info
+            await self.delegate.finish_write(info)
+
+            # Set the ETag and Last-Modified headers (if appropriate) for
+            # future reference and caching.
+            if info.e_tag:
+                self.set_header('ETag', info.e_tag)
+            if info.last_modified:
+                self.set_header('Last-Modified', info.last_modified)
+
+            old_info = self.file_manager.set_file_info(info.key, info)
+            if old_info:
+                await self.delegate.remove(old_info)
+                self.send_status(200, "Successfully updated resource.")
+            else:
+                self.send_status(201, "Created new resource.")
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            logger.exception("Internal Error in PUT request!")
+            self.send_status(500, 'Internal Server Error')
+
+    async def delete(self, path):
+        try:
+            if not self._info:
+                self.send_status(404, 'File not found!')
+                return
+            await self.file_manager.remove_file_info_async(self._info)
+            self.send_status(200, 'File removed successfully.')
+        except Exception:
+            logger.exception("Error in DELETE: %s", self.request.uri)
+            self.send_status(500, 'Internal Server Error')

@@ -21,6 +21,11 @@ NAME_REGEX = re.compile(r'name="?(?P<name>[^"]+)"?')
 """Regex to match the name field."""
 
 
+def format_header_date(header_value: datetime.datetime) -> str:
+    """Format a datetime into a string suitable for an HTTP header."""
+    return email.utils.format_datetime(header_value)
+
+
 def parse_header_date(header_value: str) -> datetime.datetime:
     """Parse a date in a header to a datetime object.
 

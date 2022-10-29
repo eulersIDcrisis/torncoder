@@ -10,8 +10,7 @@ from tornado.httputil import HTTPHeaders
 # Local Imports
 from torncoder.utils import (
     MULTIPART_FORM_DATA_TYPE,
-    parse_content_name,
-    is_awaitable
+    parse_content_name
 )
 from torncoder.file_util._core import AbstractFileDelegate
 

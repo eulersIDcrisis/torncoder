@@ -186,18 +186,18 @@ def start():
     parser.add_argument('--cache-dir', '-d', default=None, help=(
         'Root directory to use for the cache.'
     ))
-    parser.add_argument('--key-level', '-k', type=int, default=0)
-    parser.add_argument('--max-count', '-c', type=int, default=-1, help=(
-        'Limit the maximum number of files in the cache. If negative, '
-        'assume unlimited.'
-    ))
-    parser.add_argument('--max-size', '-s', type=int, default=None, help=(
-        'Limit the total combined size of the files in the cache. If '
-        'negative, assume unlimited (up to whatever the OS allows).'
-    ))
-    parser.add_argument('--max-entry-size', '-m', type=int, default=-1,
-        help=('Maximum size for a single entry. If negative, assume '
-              'unlimited'))
+    # parser.add_argument('--key-level', '-k', type=int, default=0)
+    # parser.add_argument('--max-count', '-c', type=int, default=-1, help=(
+    #     'Limit the maximum number of files in the cache. If negative, '
+    #     'assume unlimited.'
+    # ))
+    # parser.add_argument('--max-size', '-s', type=int, default=None, help=(
+    #     'Limit the total combined size of the files in the cache. If '
+    #     'negative, assume unlimited (up to whatever the OS allows).'
+    # ))
+    # parser.add_argument('--max-entry-size', '-m', type=int, default=-1,
+    #     help=('Maximum size for a single entry. If negative, assume '
+    #           'unlimited.'))
     parser.add_argument('--verbose', '-v', action='count', default=0, help=(
         'Increase verbosity. This option stacks for increasing verbosity.'
     ))
@@ -235,11 +235,6 @@ def start():
         (r'/(?P<path>.+)', ServeFileHandler, context),
         (r'.*', BaseHandler)
     ])
-    # app = web.Application([
-    #     (r'/data/(?P<path>.+)', FileInfoHandler, context),
-    #     (r'/upload/(?P<path>.+)', FileUploadHandler, context),
-    #     (r'.*', BaseHandler),
-    # ])
     server = httpserver.HTTPServer(app)
     server.listen(port)
     server.start()
