@@ -1,4 +1,4 @@
-"""fileserver.py.
+"""file_cache_server.py.
 
 Basic Fileserver implementation with the following REST API:
  - GET /data/<path>: Get the file at <path>

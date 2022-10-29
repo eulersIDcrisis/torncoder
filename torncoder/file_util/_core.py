@@ -1,4 +1,4 @@
-"""simple.py.
+"""_core.py.
 
 Implementation of a simple File cache.
 
@@ -239,23 +239,6 @@ class AbstractFileDelegate(ABC):
         async for chunk in self.read_generator(file_info, start, end):
             result.extend(chunk)
         return result
-
-
-class StaticFileManager(object):
-    """File Manager for serving static content.
-
-    This manager will serve content that is assumed to be static for the
-    duration of the program; this will cache various parameters when serving
-    these files as appropriate.
-    """
-
-    def __init__(self):
-        pass
-
-    @property
-    def delegate(self) -> AbstractFileDelegate:
-        """Return the delegate for this manager."""
-        return self._delegate
 
 
 # Constant defining the number of bytes in one gigabyte.

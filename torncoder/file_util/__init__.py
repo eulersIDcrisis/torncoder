@@ -1,4 +1,4 @@
-"""tornado.cache module.
+"""tornado.file_util module.
 
 Common Caching utilities.
 """
