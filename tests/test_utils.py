@@ -34,6 +34,33 @@ class TestUtils(unittest.TestCase):
         )
         self.assertIsNone(utils.parse_header_date(''))
 
+    def test_force_abspath_inside_root_dir(self):
+        self.assertEqual(utils.force_abspath_inside_root_dir(
+            '/mnt/test', '/asdf'
+        ), '/mnt/test/asdf')
+        self.assertEqual(utils.force_abspath_inside_root_dir(
+            '/mnt/test', '   asdf'
+        ), '/mnt/test/asdf')
+        self.assertEqual(utils.force_abspath_inside_root_dir(
+            '/mnt/test', '   /asdf'
+        ), '/mnt/test/asdf')
+
+        # Test these quirky corner cases.
+        self.assertEqual(utils.force_abspath_inside_root_dir(
+            '/mnt/test', 'asdf/../fdsa'
+        ), '/mnt/test/fdsa')
+        self.assertEqual(utils.force_abspath_inside_root_dir(
+            '/mnt/test', 'asdf/a/b/c/../../fdsa'
+        ), '/mnt/test/asdf/a/fdsa')
+
+        # Test bad cases
+        self.assertIsNone(utils.force_abspath_inside_root_dir(
+            '/mnt/test', '../../asdf'))
+        self.assertIsNone(utils.force_abspath_inside_root_dir(
+            '/mnt/test', 'asdf/../../../asdf'))
+        self.assertIsNone(utils.force_abspath_inside_root_dir(
+            '/mnt/test', 'asdf/fdsa/../../../f'))
+
 
 if __name__ == '__main__':
     unittest.main()
