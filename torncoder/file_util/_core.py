@@ -9,13 +9,17 @@ import os
 import io
 import uuid
 import hashlib
+import mimetypes
 from abc import abstractmethod, ABC
 from collections import OrderedDict
 from datetime import datetime, timezone
 # Typing import
 from typing import AsyncGenerator, Generator, Mapping, Union, Optional
 
-from torncoder.utils import parse_header_date
+from torncoder.utils import (
+    parse_header_date, force_abspath_inside_root_dir,
+    is_path_inside_directory
+)
 # Local Imports
 
 # Typing Helpers
@@ -27,6 +31,28 @@ DEFAULT_CONTENT_TYPE = 'application/octet-stream'
 
 class CacheError(Exception):
     """Error implying an issue with the cache."""
+
+
+if 'md5' in hashlib.algorithms_available:
+    def _default_hash_factory(initial_data: bytes):
+        return hashlib.md5(initial_data)
+else:
+    def _default_hash_factory(initial_data: bytes):
+        return hashlib.sha256(initial_data)
+
+
+def calculate_content_type(path) -> str:
+    mime_type, _ = mimetypes.guess_type(path)
+    if mime_type:
+        return mime_type
+    return DEFAULT_CONTENT_TYPE
+
+
+def calculate_etag_hash(version: bytes, content: bytes) -> str:
+    """Calculate the ETag header value from the version and content."""
+    hash_obj = _default_hash_factory(version)
+    hash_obj.update(content)
+    return hash_obj.hexdigest()
 
 
 class FileInfo(object):
@@ -52,7 +78,7 @@ class FileInfo(object):
             size=size, content_type=content_type
         )
 
-    def __init__(self, key: str, internal_key: str =None,
+    def __init__(self, key: str, internal_key: str,
                  last_modified: Optional[datetime] =None,
                  e_tag: Optional[str] =None, size: Optional[int] =None,
                  content_type: str =DEFAULT_CONTENT_TYPE,
@@ -147,15 +173,38 @@ def generate_path(path: str, key_level: int=0):
     return '{}/{}/{}'.format(path[:2], path[2:4], path[4:])
 
 
+def create_file_info_from_os_stat(
+    key: str, internal_key: str, stat_result: os.stat_result,
+    content_type: Optional[str]=None, version: bytes =b'(not set)'
+) -> FileInfo:
+    """Create a FileInfo object after parsing the given stat results.
+
+    This call will calculate the file size, last_modified, and an ETag value
+    (based on 'last_modified'). This will also attempt to determine the file
+    type based on the file extension using the 'mimetypes' library, though
+    this should not necessarily be relied upon.
+    """
+    size = int(stat_result.st_size)
+    last_modified = datetime.fromutctimestamp(stat_result.st_mtime)
+    etag = calculate_etag_hash(
+        version, last_modified.isoformat().encode('utf-8'))
+    if not content_type:
+        content_type = calculate_content_type(internal_key)
+    return FileInfo(key, internal_key, last_modified, etag, size, content_type)
+
+
 class AbstractFileDelegate(ABC):
     """Base Interface for all things pertaining to async file management.
 
     This defines a high-level interface for managing files, as follows:
-     - start_write(key): Start writing (open) a 'file' at the given key.
-     - write(key, data): Append the data to the 'file' at the given key.
-     - finish_write(key): Finish (flush?) data to the 'file' at the given key.
+     - start_write(file_info): Start writing (open) a 'file' at the given key.
+     - write(file_info, data): Append data to the 'file' at the given key.
+     - finish_write(file_info): Finish (flush?) data to the 'file' at the
+            given key. This should return the "finished" FileInfo as a result.
      - read_generator(key, start, end): Return an (async) interator that
             yields the data for this 'file' in the given start/end slice.
+     - get_file_info(key): Return the FileInfo for the given key or None if no
+            FileInfo exists for this key.
 
     As best as is reasonable, the rest of the utilities try to simplify
     file-management to this interface. Each call above is expected to be
@@ -170,6 +219,10 @@ class AbstractFileDelegate(ABC):
         """
         # By default, just return a random key.
         return uuid.uuid1().hex
+
+    @abstractmethod
+    async def get_file_info(self, key: str) -> Optional[FileInfo]:
+        return None
 
     @abstractmethod
     async def start_write(
@@ -195,12 +248,17 @@ class AbstractFileDelegate(ABC):
         pass
 
     @abstractmethod
-    async def finish_write(self, file_info: FileInfo):
-        """Called when done writing data for the given FileInfo.
+    async def finish_write(self, file_info: FileInfo) -> FileInfo:
+        """Called when done writing, returning the finalized FileInfo.
 
         This operation should be thought of as "closing a file" or
         otherwise flushing its contents. The contents should still exist after
         this operation and be accessible by: `read_generator()`.
+        
+        Implementation Assumptions:
+        This should return the "newest" form of the FileInfo, since the write
+        operation was finished; this might update the 'e_tag' field (for
+        example) if the value was calculated as a hash of the contents.
         """
         pass
 
@@ -376,7 +434,7 @@ class MemoryFileDelegate(AbstractFileDelegate):
     def keys(self):
         return list(self._data_mapping.keys())
 
-    def get_file_info(self, key: str) -> Optional[FileInfo]:
+    async def get_file_info(self, key: str) -> Optional[FileInfo]:
         return self._info_mapping.get(key)
 
     def get_headers(self, key: str) -> Optional[Mapping[str, str]]:
@@ -432,11 +490,18 @@ class MemoryFileDelegate(AbstractFileDelegate):
 
 class SynchronousFileDelegate(AbstractFileDelegate):
 
-    def __init__(self, root_path, key_level=1):
+    def __init__(self, root_path, key_level=1, version=b'(not set)'):
         self._root_path = root_path
         self._key_level = key_level
         self._stream_mapping = {}
-        self._path_mapping = {}
+        self._version = version
+
+    async def get_file_info(self, key: str) -> Optional[FileInfo]:
+        path = force_abspath_inside_root_dir(
+            self._root_path, key)
+        stat_result = os.stat(path)
+        return create_file_info_from_os_stat(
+            key, path, stat_result, version=self._version)
 
     async def start_write(
         self, key: str, headers: Mapping[str, str]
@@ -444,7 +509,6 @@ class SynchronousFileDelegate(AbstractFileDelegate):
         internal_key = os.path.join(self._root_path, key)
         info = FileInfo.from_http_headers(key, internal_key, headers)
         self._stream_mapping[key] = open(internal_key, 'wb')
-        # self._path_mapping[key] = path
         return info
 
     async def write(self, file_info: FileInfo, data: DataContent):
@@ -453,12 +517,13 @@ class SynchronousFileDelegate(AbstractFileDelegate):
             raise CacheError('Stream is not set for the cache!')
         stm.write(data)
 
-    async def finish_write(self, file_info: FileInfo):
+    async def finish_write(self, file_info: FileInfo) -> FileInfo:
         # Mark that the file has been fully written.
         stm = self._stream_mapping.get(file_info.key)
         if not stm:
             raise CacheError('Stream is not set for the cache!')
         stm.close()
+        return file_info
 
     async def read_generator(
         self, file_info: FileInfo,
@@ -494,10 +559,9 @@ class SynchronousFileDelegate(AbstractFileDelegate):
                     yield line[:to_read]
 
     async def remove(self, file_info):
-        path = self._path_mapping.pop(file_info.key, None)
-        if not path:
-            return
+        assert is_path_inside_directory(
+            self._root_path, file_info.internal_key)
         try:
-            os.remove(path)
+            os.remove(file_info.internal_key)
         except OSError:
             pass

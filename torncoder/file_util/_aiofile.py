@@ -8,12 +8,17 @@ NOTE: The 'aiofile' module is distinct from the 'aiofiles' module':
  - 'aiofiles' (plural) wraps synchronous file operations in a threadpool.
 """
 import os
+import asyncio
 from contextlib import AsyncExitStack
+from typing import Optional
 # AIOFile import
 import aiofile
 # Local Imports
 from torncoder.file_util._core import (
-    AbstractFileDelegate, CacheError, FileInfo
+    AbstractFileDelegate, CacheError, FileInfo,
+    create_file_info_from_os_stat,
+    force_abspath_inside_root_dir,
+    is_path_inside_directory
 )
 
 
@@ -26,7 +31,13 @@ class NativeAioFileDelegate(AbstractFileDelegate):
         self._stream_mapping = dict()
         self._path_mapping = dict()
 
-    async def start_write(self, key, headers):
+    async def get_file_info(self, key: str) -> Optional[FileInfo]:
+        path = force_abspath_inside_root_dir(self._root_dir, key)
+        loop = asyncio.get_event_loop()
+        stat_result = await loop.run_in_executor(None, os.stat, path)
+        return create_file_info_from_os_stat(key, path, stat_result)
+
+    async def start_write(self, key, headers) -> FileInfo:
         internal_key = os.path.join(self._root_dir, key)
         file_info = FileInfo(key, internal_key)
         stm = await aiofile.async_open(internal_key, 'wb')

@@ -380,13 +380,13 @@ class TestMultipartFormDataParser(unittest.IsolatedAsyncioTestCase):
                 list(delegate.get_headers('b.csv').get_all()),
                 '"b.csv" header mismatch on slice: {}'.format(i))
             # Assert that the file contents match what is expected.
-            a_info = delegate.get_file_info('a.txt')
+            a_info = await delegate.get_file_info('a.txt')
             self.assertIsNotNone(a_info)
             a_data = await delegate.read_into_bytes(a_info)
             self.assertEqual(
                 b'a', a_data,
                 '"a.txt" file contents mismatch on slice: {}'.format(i))
-            b_info = delegate.get_file_info('b.csv')
+            b_info = await delegate.get_file_info('b.csv')
             self.assertIsNotNone(b_info)
             b_data = await delegate.read_into_bytes(b_info)
             self.assertEqual(
@@ -431,13 +431,13 @@ class TestMultipartFormDataParser(unittest.IsolatedAsyncioTestCase):
                 list(delegate.get_headers('b.csv')),
                 '"b.csv" header mismatch on slice: {}'.format(i))
             # Assert that the file contents match what is expected.
-            a_info = delegate.get_file_info('a.txt')
+            a_info = await delegate.get_file_info('a.txt')
             self.assertIsNotNone(a_info)
             a_data = await delegate.read_into_bytes(a_info)
             self.assertEqual(
                 b'a', a_data,
                 '"a.txt" file contents mismatch on slice: {}'.format(i))
-            b_info = delegate.get_file_info('b.csv')
+            b_info = await delegate.get_file_info('b.csv')
             self.assertIsNotNone(b_info)
             b_data = await delegate.read_into_bytes(b_info)
             self.assertEqual(

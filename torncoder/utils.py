@@ -84,6 +84,17 @@ def is_awaitable(obj: Any) -> bool:
     return asyncio.isfuture(obj) or asyncio.iscoroutine(obj)
 
 
+def is_path_inside_directory(root_dir: str, full_path: str) -> bool:
+    """Return whether the given path is contained inside root_dir.
+
+    NOTE: Both given paths are expected to be absolute paths!
+    """
+    full_root = os.path.abspath(root_dir)
+    if not full_root.endswith('/'):
+        full_root += '/'
+    return full_path.startswith(full_root)
+
+
 def force_abspath_inside_root_dir(root_dir: str, path: str):
     """Return the joined path inside root_dir, or None if not possible.
 
