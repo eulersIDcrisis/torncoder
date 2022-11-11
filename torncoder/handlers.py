@@ -14,7 +14,7 @@ from torncoder.utils import (
     parse_header_date, parse_range_header, logger
 )
 from torncoder.file_util import (
-    FileInfo, SimpleFileManager, AbstractFileDelegate
+    FileInfo, AbstractFileDelegate
 )
 
 
@@ -206,8 +206,8 @@ class ReadonlyFileHandler(web.RequestHandler):
      - HEAD: Get content Metadata (same as GET without content).
     """
 
-    def initialize(self, file_manager: SimpleFileManager=None):
-        self.file_manager = file_manager
+    def initialize(self, delegate: AbstractFileDelegate =None):
+        self.delegate = delegate
 
     def send_status(self, status_code, message):
         self.set_status(status_code)
@@ -217,14 +217,14 @@ class ReadonlyFileHandler(web.RequestHandler):
 
     async def get(self, path):
         try:
-            info = self.file_manager.get_file_info(path)
+            info = await self.delegate.get_file_info(path)
             if not info:
                 self.set_status(404)
                 self.write(dict(code=404, message="File not found!"))
                 return
             # Proxy the request handling to the generalized call.
             await serve_get_from_file_info(
-                self.file_manager.delegate, info, self,
+                self.delegate, info, self,
                 head_only=False)
         except Exception:
             self.set_status(500)
@@ -232,14 +232,14 @@ class ReadonlyFileHandler(web.RequestHandler):
 
     async def head(self, path):
         try:
-            info = self.file_manager.get_file_info(path)
+            info = await self.delegate.get_file_info(path)
             if not info:
                 self.set_status(404)
                 self.write(dict(code=404, message="File not found!"))
                 return
             # Proxy the request handling to the generalized call.
             await serve_get_from_file_info(
-                self.file_manager.delegate, info, self,
+                self.delegate, info, self,
                 head_only=True)
         except Exception:
             self.set_status(500)
@@ -269,12 +269,14 @@ class ServeFileHandler(ReadonlyFileHandler):
     ```
     """
 
-    def initialize(self, file_manager: SimpleFileManager =None):
-        self.file_manager = file_manager
-        self.delegate = file_manager.delegate
-        self._info = None
+    def initialize(self, delegate: AbstractFileDelegate =None):
+        self.delegate = delegate
         self._error = None
         self._exit_stack = AsyncExitStack()
+        # Stores the possible new FileInfo that might be uploaded.
+        self._new_info = None
+        # Stores the FileInfo that might currently exist.
+        self._curr_info = None
 
     def on_finish(self):
         if self._exit_stack:
@@ -303,23 +305,23 @@ class ServeFileHandler(ReadonlyFileHandler):
         # If the request is a PUT, we are likely expecting a request
         # body, so initialize the file here.
         if self.request.method.upper() == 'PUT':
-            curr_info = self.file_manager.get_file_info(path)
-            if curr_info:
-                if check_if_412(curr_info, self.request.headers):
+            self._curr_info = await self.delegate.get_file_info(path)
+            if self._curr_info:
+                if check_if_412(self._curr_info, self.request.headers):
                     self.send_status(412, "Precondition failed!")
                     return
-            self._info = await self.delegate.start_write(
+            self._new_info = await self.delegate.start_write(
                 path, self.request.headers)
         else:
             # Fetch the current file info.
-            self._info = self.file_manager.get_file_info(path)
+            self._curr_info = await self.delegate.get_file_info(path)
 
     async def data_received(self, chunk: bytes):
         try:
             # If we are supposed to receive a file and there are no errors,
             # write the contents to the given key.
-            if self._info and not self._error:
-                await self.delegate.write(self._info, chunk)
+            if self._new_info and not self._error:
+                await self.delegate.write(self._new_info, chunk)
         except Exception as exc:
             self._error = exc
 
@@ -329,8 +331,7 @@ class ServeFileHandler(ReadonlyFileHandler):
                 self.send_status(400, "Invalid file upload!")
                 return
             # Finish the write operation.
-            info = self._info
-            await self.delegate.finish_write(info)
+            info = await self.delegate.finish_write(self._new_info)
 
             # Set the ETag and Last-Modified headers (if appropriate) for
             # future reference and caching.
@@ -339,24 +340,21 @@ class ServeFileHandler(ReadonlyFileHandler):
             if info.last_modified:
                 self.set_header('Last-Modified', info.last_modified)
 
-            old_info = self.file_manager.set_file_info(info.key, info)
-            if old_info:
-                await self.delegate.remove(old_info)
+            # If a previous entry existed, return a 200.
+            if self._curr_info:
                 self.send_status(200, "Successfully updated resource.")
             else:
                 self.send_status(201, "Created new resource.")
         except Exception:
-            import traceback
-            traceback.print_exc()
             logger.exception("Internal Error in PUT request!")
             self.send_status(500, 'Internal Server Error')
 
     async def delete(self, path):
         try:
-            if not self._info:
+            if not self._curr_info:
                 self.send_status(404, 'File not found!')
                 return
-            await self.file_manager.remove_file_info_async(self._info)
+            await self.delegate.remove(self._curr_info)
             self.send_status(200, 'File removed successfully.')
         except Exception:
             logger.exception("Error in DELETE: %s", self.request.uri)

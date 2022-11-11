@@ -11,10 +11,9 @@ import uuid
 import hashlib
 import mimetypes
 from abc import abstractmethod, ABC
-from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import datetime
 # Typing import
-from typing import AsyncGenerator, Generator, Mapping, Union, Optional
+from typing import AsyncGenerator, Mapping, Union, Optional
 
 from torncoder.utils import (
     parse_header_date, force_abspath_inside_root_dir,
@@ -185,7 +184,7 @@ def create_file_info_from_os_stat(
     this should not necessarily be relied upon.
     """
     size = int(stat_result.st_size)
-    last_modified = datetime.fromutctimestamp(stat_result.st_mtime)
+    last_modified = datetime.utcfromtimestamp(stat_result.st_mtime)
     etag = calculate_etag_hash(
         version, last_modified.isoformat().encode('utf-8'))
     if not content_type:
@@ -299,126 +298,6 @@ class AbstractFileDelegate(ABC):
         return result
 
 
-# Constant defining the number of bytes in one gigabyte.
-ONE_GIGABYTE = 2 ** 30
-ONE_HOUR = 60 * 60
-
-
-class SimpleFileManager(object):
-    """File Manager for reading and writing files.
-
-    This is basically designed to be a key/value store where the content is
-    written out to file instead of stored in memory (kind of like S3).
-    Subclasses can implement this key/value store however they choose as long
-    as they preserve this structure.
-
-    This basic implementation stores the file information in an in-memory
-    dictionary, and the files themselves in a manner prescribed by the passed
-    delegate.
-    """
-
-    def __init__(
-            self,
-            delegate: AbstractFileDelegate,
-            max_entry_size: Optional[int] =None,
-            max_cache_size: Optional[int] =None,
-            max_cache_count: Optional[int] =None):
-        """Create a SimpleFileManager that stores files for the given delegate.
-
-        This tracks the different files stored and permits simple 'vacuum' and
-        quota operations on the resulting files, which are disabled if both
-        'max_size' and 'max_count' are falsey/None.
-        """
-        self._delegate = delegate
-        # Use an ordered dict for the cache.
-        #
-        # NOTE: The cache should be ordered based on the most likely items to
-        # expire.
-        self._cache_mapping = OrderedDict()
-
-        # Cache status items.
-        self._max_count = max_cache_count
-        self._max_size = max_cache_size
-        self._max_file_size = max_entry_size
-
-        # Store the current (tracked) size of the file directory.
-        self._current_size = 0
-
-    @property
-    def delegate(self) -> AbstractFileDelegate:
-        """Return the underlying delegate for this manager."""
-        return self._delegate
-
-    @property
-    def max_item_count(self) -> Optional[int]:
-        """Return the count of tracked items/files in this manager."""
-        return len(self._cache_mapping)
-
-    @property
-    def max_byte_count(self) -> Optional[int]:
-        """Return byte count for the tracked items/files in this manager."""
-        return self._current_size
-
-    @property
-    def max_file_size(self) -> Optional[int]:
-        """Return the maximum number of bytes for a given file."""
-        return self._max_file_size
-
-    def initialize(self):
-        pass
-
-    def close(self):
-        """Close this SimpleFileManager.
-
-        NOTE: This will write out the current contents
-        """
-        pass
-
-    def get_file_info(self, key: str) -> Optional[FileInfo]:
-        """Return the FileInfo for the given key.
-
-        If no entry exists for this key, None is returned instead.
-        """
-        return self._cache_mapping.get(key)
-
-    def set_file_info(
-        self, key: str, file_info: FileInfo
-    ) -> Optional[FileInfo]:
-        """Set the FileInfo to the given value
-
-        If a previous entry existed at this key, it is returned.
-        """
-        old_info = self._cache_mapping.get(key)
-        self._cache_mapping[key] = file_info
-        # Update the current size of the cached data.
-        self._current_size += file_info.size
-        if old_info:
-            self._current_size -= old_info.size
-
-        # Return the old FileInfo object as applicable.
-        return old_info
-
-    async def remove_file_info_async(self, file_info: FileInfo) -> Optional[FileInfo]:
-        item = self._cache_mapping.pop(file_info.key, None)
-        if item:
-            self._current_size -= item.size
-            await self.delegate.remove(item)
-
-    async def vacuum(self):
-        """Vacuum and assert the constraints of the cache by removing items.
-
-        This is designed to be run at some regular interval.
-        """
-        if self._max_count:
-            while len(self._cache_mapping) > self._max_count:
-                item = self._cache_mapping.popitem(last=True)
-                await self.delegate.remove(item.internal_key)
-        if self._max_size:
-            while self._current_size > self._max_size:
-                item = self._cache_mapping.popitem(last=True)
-                await self.delegate.remove(item.internal_key)
-
-
 #
 # Core AbstractFileDelegate Implementations
 #
@@ -499,9 +378,12 @@ class SynchronousFileDelegate(AbstractFileDelegate):
     async def get_file_info(self, key: str) -> Optional[FileInfo]:
         path = force_abspath_inside_root_dir(
             self._root_path, key)
-        stat_result = os.stat(path)
-        return create_file_info_from_os_stat(
-            key, path, stat_result, version=self._version)
+        try:
+            stat_result = os.stat(path)
+            return create_file_info_from_os_stat(
+                key, path, stat_result, version=self._version)
+        except FileNotFoundError:
+            return None
 
     async def start_write(
         self, key: str, headers: Mapping[str, str]

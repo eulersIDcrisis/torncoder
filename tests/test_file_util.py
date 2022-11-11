@@ -16,8 +16,6 @@ from torncoder.file_util import (
     AbstractFileDelegate,
     MemoryFileDelegate,
     SynchronousFileDelegate,
-    FileInfo,
-    SimpleFileManager,
     # Import these to check which delegates are available.
     NATIVE_AIO_FILE_DELEGATE_ENABLED,
     THREADED_FILE_DELEGATE_ENABLED

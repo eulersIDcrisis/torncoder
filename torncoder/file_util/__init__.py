@@ -3,12 +3,10 @@
 Common Caching utilities.
 """
 from torncoder.file_util._core import (
-    # Abstract Classes
-    AbstractFileDelegate,
+    # Core Classes
+    AbstractFileDelegate, FileInfo,
     # Default Implementations
     MemoryFileDelegate, SynchronousFileDelegate,
-    # File Manager Implementations
-    FileInfo, SimpleFileManager,
 )
 # Import the parser library utilities.
 from torncoder.file_util._parser import (
