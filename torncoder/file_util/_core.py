@@ -630,10 +630,7 @@ class SimpleCacheFileDelegate(AbstractFileDelegate):
         self, file_info: FileInfo,
         start: Optional[int] =None, end: Optional[int] =None
     ) -> bytearray:
-        print("INFO Mapping: {}".format(self._info_mapping))
-        print("KEYS: {} -- ".format(file_info.key))
         _, internal_info = self._info_mapping.get(file_info.key, (None, None))
-        print("INFO: {}".format(internal_info))
         # Use the parent delegate's version of the call in case there are
         # optimizations implemented.
         if not internal_info:
