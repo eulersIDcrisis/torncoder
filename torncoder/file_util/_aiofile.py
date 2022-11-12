@@ -32,13 +32,18 @@ class NativeAioFileDelegate(AbstractFileDelegate):
         self._path_mapping = dict()
 
     async def get_file_info(self, key: str) -> Optional[FileInfo]:
-        path = force_abspath_inside_root_dir(self._root_dir, key)
-        loop = asyncio.get_event_loop()
-        stat_result = await loop.run_in_executor(None, os.stat, path)
-        return create_file_info_from_os_stat(key, path, stat_result)
+        try:
+            path = force_abspath_inside_root_dir(self._root_dir, key)
+            loop = asyncio.get_event_loop()
+            stat_result = await loop.run_in_executor(None, os.stat, path)
+            return create_file_info_from_os_stat(key, path, stat_result)
+        except Exception:
+            return None
 
     async def start_write(self, key, headers) -> FileInfo:
-        internal_key = os.path.join(self._root_dir, key)
+        internal_key = force_abspath_inside_root_dir(self._root_dir, key)
+        if not internal_key:
+            raise Exception('Cannot open file at: {}'.format(internal_key))
         file_info = FileInfo(key, internal_key)
         stm = await aiofile.async_open(internal_key, 'wb')
         self._path_mapping[key] = internal_key
@@ -58,8 +63,11 @@ class NativeAioFileDelegate(AbstractFileDelegate):
             raise CacheError('No stream open for key: {}'.format(
                 file_info.key))
         await stm.close()
+        return file_info
 
     async def read_generator(self, file_info, start=None, end=None):
+        assert is_path_inside_directory(
+            self._root_dir, file_info.internal_key)
         async with aiofile.async_open(file_info.internal_key, 'rb') as stm:
             if start is not None:
                 stm.seek(start)
@@ -95,4 +103,9 @@ class NativeAioFileDelegate(AbstractFileDelegate):
                     return
 
     async def remove(self, file_info):
-        pass
+        assert is_path_inside_directory(
+            self._root_dir, file_info.internal_key)
+        loop = asyncio.get_event_loop()
+        # 'aiofile' does not offer a direct way to remove files, so just
+        # defer this operation to the default threadpool.
+        await loop.run_in_executor(None, os.remove, file_info.internal_key)

@@ -14,7 +14,7 @@ from tornado.testing import bind_unused_port
 import httpx
 # Local imports
 from torncoder.file_util import (
-    SynchronousFileDelegate
+    MemoryFileDelegate
 )
 from torncoder.handlers import (
     ServeFileHandler, ReadonlyFileHandler
@@ -25,10 +25,7 @@ from torncoder.utils import parse_header_date, format_header_date
 @asynccontextmanager
 async def serve_file_context():
     async with AsyncExitStack() as exit_stack:
-        tempdir = exit_stack.enter_context(
-            tempfile.TemporaryDirectory()
-        )
-        delegate = SynchronousFileDelegate(tempdir)
+        delegate = MemoryFileDelegate()
         context = dict(delegate=delegate)
         app = web.Application([
             (r'/(.*)', ServeFileHandler, context)
@@ -65,9 +62,7 @@ class ServeFileHandlerTest(unittest.IsolatedAsyncioTestCase):
 
             # PUT some data to this route.
             res = await client.put(
-                url, content=DATA, headers={
-                    'Content-Type': 'text/plain',
-                })
+                url, content=DATA)
             # Status code should _technically_ be 201 because a new
             # resource was created here.
             self.assertEqual(201, res.status_code)
@@ -75,12 +70,8 @@ class ServeFileHandlerTest(unittest.IsolatedAsyncioTestCase):
             # Get the route again. The data should be there.
             res = await client.get(url)
             self.assertEqual(200, res.status_code)
-            # self.assertEqual(
-            #     'text/plain', res.headers.get('Content-Type'))
             self.assertEqual(DATA, res.content)
             res = await client.head(url)
-            # self.assertEqual(
-            #     'text/plain', res.headers.get('Content-Type'))
             self.assertEqual(204, res.status_code)
 
             # DELETE the file.
@@ -113,7 +104,6 @@ class ServeFileHandlerTest(unittest.IsolatedAsyncioTestCase):
             DATA = b'asdfasdfasdfasdffdsajen'
             res = await client.put(
                 url, content=DATA, headers={
-                    'Content-Type': 'text/plain',
                     # NOTE: Since one primary use of this handler is to
                     # function as a cache, we permit the caller to actually
                     # pass their own ETag header to use for the response.
@@ -131,13 +121,11 @@ class ServeFileHandlerTest(unittest.IsolatedAsyncioTestCase):
             res = await client.get(url)
             self.assertEqual(200, res.status_code)
             self.assertIn('Content-Type', res.headers)
-            # self.assertEqual('text/plain', res.headers['Content-Type'])
             self.assertEqual(DATA, res.content)
             # Check the HEAD request too.
             res = await client.head(url)
             self.assertEqual(204, res.status_code)
             self.assertIn('Content-Type', res.headers)
-            # self.assertEqual('text/plain', res.headers['Content-Type'])
 
             # Make the GET request, but set the If-None-Match header.
             res = await client.get(url, headers={
@@ -173,6 +161,12 @@ class ServeFileHandlerTest(unittest.IsolatedAsyncioTestCase):
             res = await client.delete(url)
             self.assertEqual(200, res.status_code)
 
+            # Assert that the path no longer exists after deletion.
+            res = await client.get(url)
+            self.assertEqual(404, res.status_code)
+            res = await client.head(url)
+            self.assertEqual(404, res.status_code)
+
     async def test_caching_response_last_modified(self):
         async with serve_file_context() as (
             base_url, context
@@ -192,9 +186,7 @@ class ServeFileHandlerTest(unittest.IsolatedAsyncioTestCase):
             # Write out a file into the server.
             DATA = b'asdfasdfasdfasdffdsajen'
             res = await client.put(
-                url, content=DATA, headers={
-                    'Content-Type': 'text/plain',
-                })
+                url, content=DATA)
             # Status code should _technically_ be 201 because a new
             # resource was created here.
             self.assertEqual(201, res.status_code)
@@ -209,7 +201,6 @@ class ServeFileHandlerTest(unittest.IsolatedAsyncioTestCase):
             })
             self.assertEqual(200, res.status_code)
             self.assertIn('Content-Type', res.headers)
-            # self.assertEqual('text/plain', res.headers['Content-Type'])
             self.assertEqual(DATA, res.content)
             # Check the HEAD request too.
             res = await client.head(url, headers={
@@ -219,7 +210,6 @@ class ServeFileHandlerTest(unittest.IsolatedAsyncioTestCase):
             })
             self.assertEqual(204, res.status_code)
             self.assertIn('Content-Type', res.headers)
-            # self.assertEqual('text/plain', res.headers['Content-Type'])
 
             # Make the GET request, but set the If-Modified-Since
             # header to some value _after_ dt.
@@ -238,6 +228,12 @@ class ServeFileHandlerTest(unittest.IsolatedAsyncioTestCase):
 
             res = await client.delete(url)
             self.assertEqual(200, res.status_code)
+
+            # Assert that the path no longer exists after deletion.
+            res = await client.get(url)
+            self.assertEqual(404, res.status_code)
+            res = await client.head(url)
+            self.assertEqual(404, res.status_code)
 
 
 if __name__ == '__main__':

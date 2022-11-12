@@ -7,6 +7,8 @@ from torncoder.file_util._core import (
     AbstractFileDelegate, FileInfo,
     # Default Implementations
     MemoryFileDelegate, SynchronousFileDelegate,
+    # Compound Delegates
+    SimpleCacheFileDelegate, ReadOnlyDelegate
 )
 # Import the parser library utilities.
 from torncoder.file_util._parser import (

@@ -24,9 +24,12 @@ class ThreadedFileDelegate(AbstractFileDelegate):
         self._stream_mapping = dict()
 
     async def get_file_info(self, key: str) -> Optional[FileInfo]:
-        path = force_abspath_inside_root_dir(self._root_dir, key)
-        stat_result = await aiofiles.os.stat(path)
-        return create_file_info_from_os_stat(key, path, stat_result)
+        try:
+            path = force_abspath_inside_root_dir(self._root_dir, key)
+            stat_result = await aiofiles.os.stat(path)
+            return create_file_info_from_os_stat(key, path, stat_result)
+        except Exception:
+            return None
 
     async def start_write(self, key: str, headers: Mapping[str, str]):
         path = force_abspath_inside_root_dir(self._root_dir, key)
