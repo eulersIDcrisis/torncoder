@@ -230,6 +230,39 @@ class SimpleCacheFileDelegateTest(DelegateContainer.MainDelegateTests):
 
     # TODO: This delegate type should also test vacuuming and so forth to
     # make sure that various limits are enforced.
+    async def test_vacuum_size(self):
+        # For this test, let's just use the memory delegate.
+        root_delegate = MemoryFileDelegate()
+        # Create the delegate with a maximum size constraint of 1kb.
+        delegate = SimpleCacheFileDelegate(
+            root_delegate, max_size=1024)
+
+        # Write a file.
+        info = await delegate.start_write(
+            'a.txt', {'Content-Type': 'text/plain'})
+        await delegate.write(info, b'a' * 1024)
+        info = await delegate.finish_write(info)
+
+        # Make sure the file exists.
+        new_info = await delegate.get_file_info('a.txt')
+        self.assertIsNotNone(new_info)
+        self.assertEqual('a.txt', new_info.key)
+        result = await delegate.read_into_bytes(new_info)
+        self.assertEqual(b'a' * 1024, bytes(result))
+
+        # Now, add a new file.
+        new_info = await delegate.start_write(
+            'b.txt', {"Content-Type": 'text/plain'})
+        await delegate.write(new_info, b'b' * 1024)
+        new_info = await delegate.finish_write(new_info)
+        self.assertIsNotNone(new_info)
+
+        # After a vacuum, only 'b.txt' should remain.
+        await delegate.vacuum()
+        info = await delegate.get_file_info('a.txt')
+        self.assertIsNone(info)
+        info = await delegate.get_file_info('b.txt')
+        self.assertIsNotNone(info)
 
 
 @unittest.skipIf(

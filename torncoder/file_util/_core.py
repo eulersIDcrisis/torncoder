@@ -357,7 +357,9 @@ class MemoryFileDelegate(AbstractFileDelegate):
         key = file_info.key
         stm = self._stream_mapping.pop(key, None)
         if stm:
-            self._data_mapping[key] = stm.getvalue()
+            data = stm.getvalue()
+            self._data_mapping[key] = data
+            file_info.size = len(data)
         return self._info_mapping.get(key)
 
     async def read_generator(
@@ -540,6 +542,7 @@ class SimpleCacheFileDelegate(AbstractFileDelegate):
         self._key_level = key_level
         self._max_entries = max_entries
         self._max_size = max_size
+        self._curr_size = 0
         # Store an index of the current files in the store.
         self._info_mapping = OrderedDict()
         self._write_mapping = dict()
@@ -599,6 +602,9 @@ class SimpleCacheFileDelegate(AbstractFileDelegate):
             # separately.
             internal_info = await self._delegate.finish_write(internal_info)
             self._info_mapping[file_info.key] = (curr_info, internal_info)
+            # Update the current size.
+            print("ADDING: {}".format(internal_info.size))
+            self._curr_size += internal_info.size
             return curr_info
         finally:
             # Remove the current info from the write_mapping because the
@@ -622,6 +628,7 @@ class SimpleCacheFileDelegate(AbstractFileDelegate):
                 file_info.key, (None, None))
             if internal_info:
                 await self._delegate.remove(internal_info)
+                self._curr_size -= internal_info.size
         finally:
             self._info_mapping.pop(file_info.key, None)
 
@@ -637,3 +644,21 @@ class SimpleCacheFileDelegate(AbstractFileDelegate):
             return b''
         return await self._delegate.read_into_bytes(
             internal_info, start, end)
+
+    async def vacuum(self):
+        """Run a vacuum operation to try to preserve the state of the cache."""
+        if not self._info_mapping:
+            return
+        if self._max_size:
+            while self._curr_size > self._max_size:
+                _, info_tuple = self._info_mapping.popitem(last=False)
+                internal_info = info_tuple[1]
+                await self._delegate.remove(internal_info)
+                self._curr_size -= internal_info.size
+
+        if self._max_entries:
+            while len(self._info_mapping) > self._max_entries:
+                _, info_tuple = self._info_mapping.popitem(last=False)
+                internal_info = info_tuple[1]
+                await self._delegate.remove(internal_info)
+                self._curr_size -= internal_info.size
