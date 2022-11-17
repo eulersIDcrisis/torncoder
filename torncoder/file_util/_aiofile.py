@@ -9,7 +9,6 @@ NOTE: The 'aiofile' module is distinct from the 'aiofiles' module':
 """
 import os
 import asyncio
-from contextlib import AsyncExitStack
 from typing import Optional
 # AIOFile import
 import aiofile
@@ -34,6 +33,8 @@ class NativeAioFileDelegate(AbstractFileDelegate):
     async def get_file_info(self, key: str) -> Optional[FileInfo]:
         try:
             path = force_abspath_inside_root_dir(self._root_dir, key)
+            # Unfortunately, the aiofile driver does not have a way to do
+            # this internally, so run this part in a thread.
             loop = asyncio.get_event_loop()
             stat_result = await loop.run_in_executor(None, os.stat, path)
             return create_file_info_from_os_stat(key, path, stat_result)
