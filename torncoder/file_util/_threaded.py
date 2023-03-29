@@ -4,48 +4,59 @@ Specific overrides for the 'aiofiles' module.
 """
 import io
 import os
-import hashlib
-from contextlib import AsyncExitStack
-from typing import Mapping
+from typing import Mapping, Optional
+
 # 'aiofiles' import
 import aiofiles
 import aiofiles.os
+
 # Local Imports
+from torncoder.utils import is_path_inside_directory
 from torncoder.file_util._core import (
-    FileInfo, AbstractFileDelegate, CacheError
+    FileInfo,
+    AbstractFileDelegate,
+    CacheError,
+    force_abspath_inside_root_dir,
+    create_file_info_from_os_stat,
 )
 
 
 class ThreadedFileDelegate(AbstractFileDelegate):
-
     def __init__(self, root_dir: str):
         super(ThreadedFileDelegate, self).__init__()
         self._root_dir = root_dir
         self._stream_mapping = dict()
 
+    async def get_file_info(self, key: str) -> Optional[FileInfo]:
+        try:
+            path = force_abspath_inside_root_dir(self._root_dir, key)
+            stat_result = await aiofiles.os.stat(path)
+            return create_file_info_from_os_stat(key, path, stat_result)
+        except Exception:
+            return None
+
     async def start_write(self, key: str, headers: Mapping[str, str]):
-        internal_key = os.path.join(self._root_dir, key)
-        info = FileInfo(key, internal_key)
-        stm = await aiofiles.open(internal_key, 'wb')
+        path = force_abspath_inside_root_dir(self._root_dir, key)
+        info = FileInfo(key, path)
+        stm = await aiofiles.open(path, "wb")
         self._stream_mapping[key] = stm
         return info
 
     async def write(self, file_info: FileInfo, data):
         stm = self._stream_mapping.get(file_info.key)
         if not stm:
-            raise CacheError('No stream open for key: {}'.format(
-                file_info.key))
+            raise CacheError("No stream open for key: {}".format(file_info.key))
         return await stm.write(data)
 
     async def finish_write(self, file_info: FileInfo):
         stm = self._stream_mapping.get(file_info.key)
         if not stm:
-            raise CacheError('No stream open for key: {}'.format(
-                file_info.key))
+            raise CacheError("No stream open for key: {}".format(file_info.key))
         await stm.close()
+        return file_info
 
     async def read_generator(self, file_info, start=None, end=None):
-        async with aiofiles.open(file_info.internal_key, 'rb') as stm:
+        async with aiofiles.open(file_info.internal_key, "rb") as stm:
             if start is not None:
                 await stm.seek(start)
             else:
@@ -67,4 +78,5 @@ class ThreadedFileDelegate(AbstractFileDelegate):
                 yield chunk
 
     async def remove(self, file_info):
+        assert is_path_inside_directory(self._root_dir, file_info.internal_key)
         await aiofiles.os.remove(file_info.internal_key)

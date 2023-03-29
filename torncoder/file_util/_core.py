@@ -9,54 +9,94 @@ import os
 import io
 import uuid
 import hashlib
-from abc import abstractmethod, ABC
+import mimetypes
+from contextlib import AsyncExitStack
 from collections import OrderedDict
-from datetime import datetime, timezone
-# Typing import
-from typing import AsyncGenerator, Generator, Mapping, Union, Optional
+from abc import abstractmethod, ABC
+from datetime import datetime
 
-from torncoder.utils import parse_header_date
+# Typing import
+from typing import AsyncGenerator, Mapping, Union, Optional
+
+from torncoder.utils import (
+    parse_header_date,
+    force_abspath_inside_root_dir,
+    is_path_inside_directory,
+)
+
 # Local Imports
 
 # Typing Helpers
 DataContent = Union[bytes, bytearray, memoryview]
 
 
-DEFAULT_CONTENT_TYPE = 'application/octet-stream'
+DEFAULT_CONTENT_TYPE = "application/octet-stream"
 
 
 class CacheError(Exception):
     """Error implying an issue with the cache."""
 
 
-class FileInfo(object):
+if "md5" in hashlib.algorithms_available:
 
+    def _default_hash_factory(initial_data: bytes):
+        return hashlib.md5(initial_data)
+
+else:
+
+    def _default_hash_factory(initial_data: bytes):
+        return hashlib.sha256(initial_data)
+
+
+def calculate_content_type(path) -> str:
+    mime_type, _ = mimetypes.guess_type(path)
+    if mime_type:
+        return mime_type
+    return DEFAULT_CONTENT_TYPE
+
+
+def calculate_etag_hash(version: bytes, content: bytes) -> str:
+    """Calculate the ETag header value from the version and content."""
+    hash_obj = _default_hash_factory(version)
+    hash_obj.update(content)
+    return hash_obj.hexdigest()
+
+
+class FileInfo(object):
     @classmethod
     def from_http_headers(
-            cls, key: str, internal_key: str=None,
-            headers: Mapping[str, str]=None):
-        content_type = headers.get(
-            'Content-Type', DEFAULT_CONTENT_TYPE)
-        e_tag = headers.get('ETag')
-        last_modified_str = headers.get('Last-Modified')
+        cls, key: str, internal_key: str = None, headers: Mapping[str, str] = None
+    ):
+        content_type = headers.get("Content-Type", DEFAULT_CONTENT_TYPE)
+        e_tag = headers.get("ETag")
+        last_modified_str = headers.get("Last-Modified")
         if last_modified_str:
             last_modified = parse_header_date(last_modified_str)
         else:
             last_modified = None
-        
-        size = headers.get('Content-Length', -1)
+
+        size = headers.get("Content-Length", -1)
         size = int(size) if size else None
 
         return cls(
-            key, internal_key, last_modified=last_modified, e_tag=e_tag,
-            size=size, content_type=content_type
+            key,
+            internal_key,
+            last_modified=last_modified,
+            e_tag=e_tag,
+            size=size,
+            content_type=content_type,
         )
 
-    def __init__(self, key: str, internal_key: str =None,
-                 last_modified: Optional[datetime] =None,
-                 e_tag: Optional[str] =None, size: Optional[int] =None,
-                 content_type: str =DEFAULT_CONTENT_TYPE,
-                 metadata=None):
+    def __init__(
+        self,
+        key: str,
+        internal_key: str,
+        last_modified: Optional[datetime] = None,
+        e_tag: Optional[str] = None,
+        size: Optional[int] = None,
+        content_type: str = DEFAULT_CONTENT_TYPE,
+        metadata=None,
+    ):
         # Store the delegate to proxy how the data is written to file.
         self._key = key
         # Store the key used for this item; the key is used to identify the
@@ -97,6 +137,10 @@ class FileInfo(object):
         """The MIME type used for this header."""
         return self._content_type
 
+    @content_type.setter
+    def content_type(self, new_val):
+        self._content_type = new_val
+
     @property
     def created_at(self) -> datetime:
         return self._created_at
@@ -119,6 +163,11 @@ class FileInfo(object):
         """Return the length of the file, in bytes."""
         return self._size
 
+    @size.setter
+    def size(self, new_val):
+        assert new_val >= 0
+        self._size = new_val
+
     @property
     def e_tag(self):
         """Return the ETag (unique identifier) for the file.
@@ -127,35 +176,66 @@ class FileInfo(object):
         """
         return self._etag
 
+    @e_tag.setter
+    def e_tag(self, new_val):
+        self._etag = new_val
+
     def to_dict(self):
         """Return the info about this file as a JSON-serializable dict."""
         return dict(
-            key=self.key, internal_key=self.internal_key,
-            content_type=self.content_type, size=self.size,
-            etag=self.e_tag
+            key=self.key,
+            internal_key=self.internal_key,
+            content_type=self.content_type,
+            size=self.size,
+            etag=self.e_tag,
         )
 
 
-def generate_path(path: str, key_level: int=0):
-    path = path.lstrip('/')
+def generate_path(path: str, key_level: int = 0):
+    path = path.lstrip("/")
     if key_level <= 0:
         return path
     if isinstance(path, str):
-        path = path.encode('utf-8')
+        path = path.encode("utf-8")
     if key_level == 1:
-        return '{}/{}'.format(path[:2], path[2:])
-    return '{}/{}/{}'.format(path[:2], path[2:4], path[4:])
+        return "{}/{}".format(path[:2], path[2:])
+    return "{}/{}/{}".format(path[:2], path[2:4], path[4:])
+
+
+def create_file_info_from_os_stat(
+    key: str,
+    internal_key: str,
+    stat_result: os.stat_result,
+    content_type: Optional[str] = None,
+    version: bytes = b"(not set)",
+) -> FileInfo:
+    """Create a FileInfo object after parsing the given stat results.
+
+    This call will calculate the file size, last_modified, and an ETag value
+    (based on 'last_modified'). This will also attempt to determine the file
+    type based on the file extension using the 'mimetypes' library, though
+    this should not necessarily be relied upon.
+    """
+    size = int(stat_result.st_size)
+    last_modified = datetime.utcfromtimestamp(stat_result.st_mtime)
+    etag = calculate_etag_hash(version, last_modified.isoformat().encode("utf-8"))
+    if not content_type:
+        content_type = calculate_content_type(internal_key)
+    return FileInfo(key, internal_key, last_modified, etag, size, content_type)
 
 
 class AbstractFileDelegate(ABC):
     """Base Interface for all things pertaining to async file management.
 
     This defines a high-level interface for managing files, as follows:
-     - start_write(key): Start writing (open) a 'file' at the given key.
-     - write(key, data): Append the data to the 'file' at the given key.
-     - finish_write(key): Finish (flush?) data to the 'file' at the given key.
+     - start_write(file_info): Start writing (open) a 'file' at the given key.
+     - write(file_info, data): Append data to the 'file' at the given key.
+     - finish_write(file_info): Finish (flush?) data to the 'file' at the
+            given key. This should return the "finished" FileInfo as a result.
      - read_generator(key, start, end): Return an (async) interator that
             yields the data for this 'file' in the given start/end slice.
+     - get_file_info(key): Return the FileInfo for the given key or None if no
+            FileInfo exists for this key.
 
     As best as is reasonable, the rest of the utilities try to simplify
     file-management to this interface. Each call above is expected to be
@@ -172,9 +252,11 @@ class AbstractFileDelegate(ABC):
         return uuid.uuid1().hex
 
     @abstractmethod
-    async def start_write(
-            self, key: str, headers: Mapping[str, str]
-        ) -> FileInfo:
+    async def get_file_info(self, key: str) -> Optional[FileInfo]:
+        return None
+
+    @abstractmethod
+    async def start_write(self, key: str, headers: Mapping[str, str]) -> FileInfo:
         """Called when starting a write at this key.
 
         This operation should be thought of as "opening a file" for the
@@ -183,9 +265,7 @@ class AbstractFileDelegate(ABC):
         pass
 
     @abstractmethod
-    async def write(
-        self, file_info: FileInfo, data: DataContent
-    ) -> int:
+    async def write(self, file_info: FileInfo, data: DataContent) -> int:
         """Write/append the given data to the stream referenced by key.
 
         NOTE: Currently, this only supports "appending" to the end of the
@@ -195,19 +275,26 @@ class AbstractFileDelegate(ABC):
         pass
 
     @abstractmethod
-    async def finish_write(self, file_info: FileInfo):
-        """Called when done writing data for the given FileInfo.
+    async def finish_write(self, file_info: FileInfo) -> FileInfo:
+        """Called when done writing, returning the finalized FileInfo.
 
         This operation should be thought of as "closing a file" or
         otherwise flushing its contents. The contents should still exist after
         this operation and be accessible by: `read_generator()`.
+
+        Implementation Assumptions:
+        This should return the "newest" form of the FileInfo, since the write
+        operation was finished; this might update the 'e_tag' field (for
+        example) if the value was calculated as a hash of the contents.
         """
         pass
 
     @abstractmethod
     async def read_generator(
-        self, file_info: FileInfo,
-        start: Optional[int]=None, end: Optional[int]=None
+        self,
+        file_info: FileInfo,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
     ) -> AsyncGenerator[DataContent, None]:
         """Iterate over the data referenced by the given FileInfo.
 
@@ -225,8 +312,10 @@ class AbstractFileDelegate(ABC):
 
     # Helper to read data explicitly into a bytearray.
     async def read_into_bytes(
-        self, file_info: FileInfo,
-        start: Optional[int] =None, end: Optional[int] =None
+        self,
+        file_info: FileInfo,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
     ) -> bytearray:
         """Helper to read data from an AbstractFileDelegate into a bytearray.
 
@@ -241,130 +330,11 @@ class AbstractFileDelegate(ABC):
         return result
 
 
-# Constant defining the number of bytes in one gigabyte.
-ONE_GIGABYTE = 2 ** 30
-ONE_HOUR = 60 * 60
-
-
-class SimpleFileManager(object):
-    """File Manager for reading and writing files.
-
-    This is basically designed to be a key/value store where the content is
-    written out to file instead of stored in memory (kind of like S3).
-    Subclasses can implement this key/value store however they choose as long
-    as they preserve this structure.
-
-    This basic implementation stores the file information in an in-memory
-    dictionary, and the files themselves in a manner prescribed by the passed
-    delegate.
-    """
-
-    def __init__(
-            self,
-            delegate: AbstractFileDelegate,
-            max_entry_size: Optional[int] =None,
-            max_cache_size: Optional[int] =None,
-            max_cache_count: Optional[int] =None):
-        """Create a SimpleFileManager that stores files for the given delegate.
-
-        This tracks the different files stored and permits simple 'vacuum' and
-        quota operations on the resulting files, which are disabled if both
-        'max_size' and 'max_count' are falsey/None.
-        """
-        self._delegate = delegate
-        # Use an ordered dict for the cache.
-        #
-        # NOTE: The cache should be ordered based on the most likely items to
-        # expire.
-        self._cache_mapping = OrderedDict()
-
-        # Cache status items.
-        self._max_count = max_cache_count
-        self._max_size = max_cache_size
-        self._max_file_size = max_entry_size
-
-        # Store the current (tracked) size of the file directory.
-        self._current_size = 0
-
-    @property
-    def delegate(self) -> AbstractFileDelegate:
-        """Return the underlying delegate for this manager."""
-        return self._delegate
-
-    @property
-    def max_item_count(self) -> Optional[int]:
-        """Return the count of tracked items/files in this manager."""
-        return len(self._cache_mapping)
-
-    @property
-    def max_byte_count(self) -> Optional[int]:
-        """Return byte count for the tracked items/files in this manager."""
-        return self._current_size
-
-    @property
-    def max_file_size(self) -> Optional[int]:
-        """Return the maximum number of bytes for a given file."""
-        return self._max_file_size
-
-    def initialize(self):
-        pass
-
-    def close(self):
-        """Close this SimpleFileManager.
-
-        NOTE: This will write out the current contents
-        """
-        pass
-
-    def get_file_info(self, key: str) -> Optional[FileInfo]:
-        """Return the FileInfo for the given key.
-
-        If no entry exists for this key, None is returned instead.
-        """
-        return self._cache_mapping.get(key)
-
-    def set_file_info(
-        self, key: str, file_info: FileInfo
-    ) -> Optional[FileInfo]:
-        """Set the FileInfo to the given value
-
-        If a previous entry existed at this key, it is returned.
-        """
-        old_info = self._cache_mapping.get(key)
-        self._cache_mapping[key] = file_info
-        # Update the current size of the cached data.
-        self._current_size += file_info.size
-        if old_info:
-            self._current_size -= old_info.size
-
-        # Return the old FileInfo object as applicable.
-        return old_info
-
-    async def remove_file_info_async(self, file_info: FileInfo) -> Optional[FileInfo]:
-        item = self._cache_mapping.pop(file_info.key, None)
-        if item:
-            self._current_size -= item.size
-            await self.delegate.remove(item)
-
-    async def vacuum(self):
-        """Vacuum and assert the constraints of the cache by removing items.
-
-        This is designed to be run at some regular interval.
-        """
-        if self._max_count:
-            while len(self._cache_mapping) > self._max_count:
-                item = self._cache_mapping.popitem(last=True)
-                await self.delegate.remove(item.internal_key)
-        if self._max_size:
-            while self._current_size > self._max_size:
-                item = self._cache_mapping.popitem(last=True)
-                await self.delegate.remove(item.internal_key)
-
-
 #
 # Core AbstractFileDelegate Implementations
 #
 class MemoryFileDelegate(AbstractFileDelegate):
+    """FileDelegate that stores all of its contents in memory."""
 
     def __init__(self):
         self._stream_mapping = {}
@@ -376,7 +346,7 @@ class MemoryFileDelegate(AbstractFileDelegate):
     def keys(self):
         return list(self._data_mapping.keys())
 
-    def get_file_info(self, key: str) -> Optional[FileInfo]:
+    async def get_file_info(self, key: str) -> Optional[FileInfo]:
         return self._info_mapping.get(key)
 
     def get_headers(self, key: str) -> Optional[Mapping[str, str]]:
@@ -394,8 +364,7 @@ class MemoryFileDelegate(AbstractFileDelegate):
         self._info_mapping[key] = info
         return info
 
-    async def write(self, file_info: FileInfo,
-                    data: DataContent):
+    async def write(self, file_info: FileInfo, data: DataContent):
         stm = self._stream_mapping.get(file_info.key)
         if stm:
             stm.write(data)
@@ -404,11 +373,16 @@ class MemoryFileDelegate(AbstractFileDelegate):
         key = file_info.key
         stm = self._stream_mapping.pop(key, None)
         if stm:
-            self._data_mapping[key] = stm.getvalue()
+            data = stm.getvalue()
+            self._data_mapping[key] = data
+            file_info.size = len(data)
+        return self._info_mapping.get(key)
 
     async def read_generator(
-        self, file_info: FileInfo,
-        start: Optional[int] =None, end: Optional[int] =None
+        self,
+        file_info: FileInfo,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
     ) -> AsyncGenerator[DataContent, None]:
         key = file_info.key
         data = self._data_mapping.get(key)
@@ -420,7 +394,7 @@ class MemoryFileDelegate(AbstractFileDelegate):
             end = len(data)
         while start < end:
             chunk = min(end - start, io.DEFAULT_BUFFER_SIZE)
-            yield data[start:start + chunk]
+            yield data[start : start + chunk]
             start += chunk
 
     async def remove(self, file_info: FileInfo):
@@ -431,42 +405,59 @@ class MemoryFileDelegate(AbstractFileDelegate):
 
 
 class SynchronousFileDelegate(AbstractFileDelegate):
+    """Delegate that stores contents to the filesystem synchronously.
 
-    def __init__(self, root_path, key_level=1):
+    This delegate does not _really_ handle file I/O operations async in cases
+    that need higher performance, but is a suitable delegate for common usage.
+    """
+
+    def __init__(self, root_path, version=b"(not set)"):
         self._root_path = root_path
-        self._key_level = key_level
         self._stream_mapping = {}
-        self._path_mapping = {}
+        self._version = version
 
-    async def start_write(
-        self, key: str, headers: Mapping[str, str]
-    ) -> FileInfo:
-        internal_key = os.path.join(self._root_path, key)
-        info = FileInfo.from_http_headers(key, internal_key, headers)
-        self._stream_mapping[key] = open(internal_key, 'wb')
-        # self._path_mapping[key] = path
+    async def get_file_info(self, key: str) -> Optional[FileInfo]:
+        path = force_abspath_inside_root_dir(self._root_path, key)
+        try:
+            stat_result = os.stat(path)
+            return create_file_info_from_os_stat(
+                key, path, stat_result, version=self._version
+            )
+        except FileNotFoundError:
+            return None
+
+    async def start_write(self, key: str, headers: Mapping[str, str]) -> FileInfo:
+        path = force_abspath_inside_root_dir(self._root_path, key)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        info = FileInfo.from_http_headers(key, path, headers)
+        self._stream_mapping[key] = open(path, "wb")
         return info
 
-    async def write(self, file_info: FileInfo, data: DataContent):
+    async def write(self, file_info: FileInfo, data: DataContent) -> int:
         stm = self._stream_mapping.get(file_info.key)
         if not stm:
-            raise CacheError('Stream is not set for the cache!')
-        stm.write(data)
+            raise CacheError("Stream is not set for the cache!")
+        return stm.write(data)
 
-    async def finish_write(self, file_info: FileInfo):
+    async def finish_write(self, file_info: FileInfo) -> FileInfo:
         # Mark that the file has been fully written.
         stm = self._stream_mapping.get(file_info.key)
         if not stm:
-            raise CacheError('Stream is not set for the cache!')
+            raise CacheError("Stream is not set for the cache!")
         stm.close()
+        return file_info
 
     async def read_generator(
-        self, file_info: FileInfo,
-        start: Optional[int]=None, end: Optional[int]=None
+        self,
+        file_info: FileInfo,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
     ) -> AsyncGenerator[DataContent, None]:
+        assert is_path_inside_directory(self._root_path, file_info.internal_key)
+
         # Wait for the file to be written before reading it back. This opens
         # the file locally and closes it when this context is exitted.
-        with open(file_info.internal_key, 'rb') as stm:
+        with open(file_info.internal_key, "rb") as stm:
             if start is not None:
                 stm.seek(start)
             else:
@@ -494,10 +485,194 @@ class SynchronousFileDelegate(AbstractFileDelegate):
                     yield line[:to_read]
 
     async def remove(self, file_info):
-        path = self._path_mapping.pop(file_info.key, None)
-        if not path:
-            return
+        assert is_path_inside_directory(self._root_path, file_info.internal_key)
         try:
-            os.remove(path)
+            os.remove(file_info.internal_key)
         except OSError:
             pass
+
+
+#
+# Compound Delegates
+#
+# These delegates have the same AbstractFileDelegate interface, but they
+# are tailored to store additional metadata that might not strictly be
+# attached to the filesystem. These delegates can also implement custom
+# functionality on top of another delegate, such as vacuuming, mandating
+# READONLY behavior, etc.
+#
+class ReadOnlyDelegate(AbstractFileDelegate):
+    """Delegate that wraps another delegate to prevent write operations.
+
+    This delegate simply wraps another delegate, but will raise Exceptions
+    when write operations are attempted. This can be useful to mandate some
+    types of permission access in some cases.
+    """
+
+    def __init__(self, delegate: AbstractFileDelegate):
+        self._parent = delegate
+
+    async def start_write(self, key: str, headers: Mapping[str, str]) -> FileInfo:
+        raise PermissionError("Delegate is readonly!")
+
+    async def write(self, file_info: FileInfo, data: DataContent) -> int:
+        raise PermissionError("Delegate is readonly!")
+
+    async def finish_write(self, file_info: FileInfo) -> FileInfo:
+        raise PermissionError("Delegate is readonly!")
+
+    async def remove(self, file_info: FileInfo):
+        raise PermissionError("Delegate is readonly!")
+
+    async def get_file_info(self, key: str) -> Optional[FileInfo]:
+        return await self._parent.get_file_info(key)
+
+    async def read_generator(
+        self,
+        file_info: FileInfo,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
+    ) -> AsyncGenerator[DataContent, None]:
+        async for chunk in self._parent.read_generator(file_info, start, end):
+            yield chunk
+
+    async def read_into_bytes(
+        self,
+        file_info: FileInfo,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
+    ) -> bytearray:
+        return await self._parent.read_into_bytes(file_info, start, end)
+
+
+class SimpleCacheFileDelegate(AbstractFileDelegate):
+    """Delegate that is intended to be used as a (temporary) cache."""
+
+    def __init__(
+        self,
+        parent_delegate: AbstractFileDelegate,
+        max_entries: Optional[int] = None,
+        max_size: Optional[int] = None,
+        key_level: int = 0,
+    ):
+        # Store the delegate to proxy the requests to.
+        self._delegate = parent_delegate
+        self._key_level = key_level
+        self._max_entries = max_entries
+        self._max_size = max_size
+        self._curr_size = 0
+        # Store an index of the current files in the store.
+        self._info_mapping = OrderedDict()
+        self._write_mapping = dict()
+        # typing: Mapping[str, Tuple[FileInfo, Any]]
+
+    async def get_file_info(self, key: str) -> Optional[FileInfo]:
+        curr_info, _ = self._info_mapping.get(key, (None, None))
+        return curr_info
+
+    async def start_write(self, key: str, headers: Mapping[str, str]) -> FileInfo:
+        internal_key = uuid.uuid4().hex
+        # Create a new key dynamically.
+        result_info = FileInfo(
+            key,
+            internal_key,
+            e_tag=internal_key,
+            content_type=headers.get("Content-Type", DEFAULT_CONTENT_TYPE),
+        )
+        async with AsyncExitStack() as exit_stack:
+            internal_info = await self._delegate.start_write(internal_key, headers)
+            exit_stack.push_async_callback(self._delegate.remove, internal_info)
+            exit_stack.push_async_callback(self._delegate.finish_write, internal_info)
+
+            if key in self._write_mapping:
+                raise FileExistsError("Key {} already pending write.".format(key))
+            self._write_mapping[key] = (result_info, internal_info)
+            # If we get here, the pending write was added. Pop off all of the
+            # error callbacks appended above.
+            exit_stack.pop_all()
+        return result_info
+
+    async def write(self, file_info: FileInfo, data: DataContent) -> int:
+        _, internal_info = self._write_mapping.get(file_info.key, (None, None))
+        if not internal_info:
+            raise FileNotFoundError(
+                "No writes started for key: {}".format(file_info.key)
+            )
+        return await self._delegate.write(internal_info, data)
+
+    async def finish_write(self, file_info: FileInfo) -> FileInfo:
+        # Finish the write, and update the FileInfo as appropriate.
+        try:
+            curr_info, internal_info = self._write_mapping.get(
+                file_info.key, (None, None)
+            )
+            if not curr_info:
+                raise FileNotFoundError(
+                    "No writes started for key: {}".format(file_info.key)
+                )
+            # 'curr_info' is the latest FileInfo now that the underlying
+            # delegate finished writing the file. For our purposes, this
+            # will be ignored since the etag and so forth is tracked
+            # separately.
+            internal_info = await self._delegate.finish_write(internal_info)
+            self._info_mapping[file_info.key] = (curr_info, internal_info)
+            # Update the current size.
+            self._curr_size += internal_info.size
+            return curr_info
+        finally:
+            # Remove the current info from the write_mapping because the
+            # write has finished, one way or another.
+            self._write_mapping.pop(file_info.key, None)
+
+    async def read_generator(
+        self,
+        file_info: FileInfo,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
+    ) -> AsyncGenerator[DataContent, None]:
+        _, internal_info = self._info_mapping.get(file_info.key, (None, None))
+        if not internal_info:
+            return
+        async for chunk in self._delegate.read_generator(internal_info, start, end):
+            yield chunk
+
+    async def remove(self, file_info: FileInfo):
+        try:
+            _, internal_info = self._info_mapping.get(file_info.key, (None, None))
+            if internal_info:
+                await self._delegate.remove(internal_info)
+                self._curr_size -= internal_info.size
+        finally:
+            self._info_mapping.pop(file_info.key, None)
+
+    # Helper to read data explicitly into a bytearray.
+    async def read_into_bytes(
+        self,
+        file_info: FileInfo,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
+    ) -> bytearray:
+        _, internal_info = self._info_mapping.get(file_info.key, (None, None))
+        # Use the parent delegate's version of the call in case there are
+        # optimizations implemented.
+        if not internal_info:
+            return b""
+        return await self._delegate.read_into_bytes(internal_info, start, end)
+
+    async def vacuum(self):
+        """Run a vacuum operation to try to preserve the state of the cache."""
+        if not self._info_mapping:
+            return
+        if self._max_size:
+            while self._curr_size > self._max_size:
+                _, info_tuple = self._info_mapping.popitem(last=False)
+                internal_info = info_tuple[1]
+                await self._delegate.remove(internal_info)
+                self._curr_size -= internal_info.size
+
+        if self._max_entries:
+            while len(self._info_mapping) > self._max_entries:
+                _, info_tuple = self._info_mapping.popitem(last=False)
+                internal_info = info_tuple[1]
+                await self._delegate.remove(internal_info)
+                self._curr_size -= internal_info.size
