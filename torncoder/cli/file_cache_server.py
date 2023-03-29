@@ -22,11 +22,9 @@ from tornado import web, ioloop, httpserver
 # Local Imports
 from torncoder.utils import logger
 from torncoder.file_util import (
-    NATIVE_AIO_FILE_DELEGATE_ENABLED,
-    SynchronousFileDelegate,
-    FileInfo,
     get_available_delegate_types,
     create_delegate,
+    ReadOnlyDelegate,
 )
 from torncoder.handlers import ServeFileHandler
 
@@ -45,18 +43,13 @@ def start():
     parser.add_argument(
         "--cache-dir", "-d", default=None, help=("Root directory to use for the cache.")
     )
-    # parser.add_argument('--key-level', '-k', type=int, default=0)
-    # parser.add_argument('--max-count', '-c', type=int, default=-1, help=(
-    #     'Limit the maximum number of files in the cache. If negative, '
-    #     'assume unlimited.'
-    # ))
-    # parser.add_argument('--max-size', '-s', type=int, default=None, help=(
-    #     'Limit the total combined size of the files in the cache. If '
-    #     'negative, assume unlimited (up to whatever the OS allows).'
-    # ))
-    # parser.add_argument('--max-entry-size', '-m', type=int, default=-1,
-    #     help=('Maximum size for a single entry. If negative, assume '
-    #           'unlimited.'))
+    parser.add_argument(
+        "--readonly",
+        action="store_true",
+        help=(
+            "Serve static files; do not permit updating the files at the given directory."
+        ),
+    )
     parser.add_argument(
         "--verbose",
         "-v",
@@ -66,8 +59,8 @@ def start():
     )
     # Dynamically determine the available choices.
     engines = get_available_delegate_types()
-    if "synchronous" in engines:
-        default_engine = "synchronous"
+    if "threaded" in engines:
+        default_engine = "threaded"
     else:
         default_engine = engines[0]
 
@@ -95,6 +88,11 @@ def start():
     loop = ioloop.IOLoop.current()
 
     delegate = create_delegate(options.use_engine, cache_dir)
+
+    # Do not permit write operations if configured in readonly mode.
+    if options.readonly:
+        delegate = ReadOnlyDelegate(delegate)
+
     context = dict(delegate=delegate)
     app = web.Application(
         [
