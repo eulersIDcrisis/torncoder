@@ -617,7 +617,6 @@ class SimpleCacheFileDelegate(AbstractFileDelegate):
             internal_info = await self._delegate.finish_write(internal_info)
             self._info_mapping[file_info.key] = (curr_info, internal_info)
             # Update the current size.
-            print("ADDING: {}".format(internal_info.size))
             self._curr_size += internal_info.size
             return curr_info
         finally:

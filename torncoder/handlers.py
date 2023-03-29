@@ -288,18 +288,30 @@ class ServeFileHandler(ReadonlyFileHandler):
             self.send_status(400, "Bad arguments!")
             return
 
-        # If the request is a PUT, we are likely expecting a request
-        # body, so initialize the file here.
-        if self.request.method.upper() == "PUT":
-            self._curr_info = await self.delegate.get_file_info(path)
-            if self._curr_info:
-                if check_if_412(self._curr_info, self.request.headers):
-                    self.send_status(412, "Precondition failed!")
-                    return
-            self._new_info = await self.delegate.start_write(path, self.request.headers)
-        else:
-            # Fetch the current file info.
-            self._curr_info = await self.delegate.get_file_info(path)
+        try:
+            # If the request is a PUT, we are likely expecting a request
+            # body, so initialize the file here.
+            if self.request.method.upper() == "PUT":
+                self._curr_info = await self.delegate.get_file_info(path)
+                if self._curr_info:
+                    if check_if_412(self._curr_info, self.request.headers):
+                        self.send_status(412, "Precondition failed!")
+                        return
+                self._new_info = await self.delegate.start_write(
+                    path, self.request.headers
+                )
+            else:
+                # Fetch the current file info.
+                self._curr_info = await self.delegate.get_file_info(path)
+        except PermissionError:
+            # Implies a READONLY situation. Return a 405.
+            self.send_status(405, "This path is readonly!")
+            self.finish()
+            return
+        except Exception:
+            self.send_status(404, "File not found.")
+            self.finish()
+            return
 
     async def data_received(self, chunk: bytes):
         try:
