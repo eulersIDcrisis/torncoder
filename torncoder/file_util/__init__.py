@@ -4,30 +4,29 @@ Common Caching utilities.
 """
 from torncoder.file_util._core import (
     # Core Classes
-    AbstractFileDelegate, FileInfo,
+    AbstractFileDelegate,
+    FileInfo,
     # Default Implementations
-    MemoryFileDelegate, SynchronousFileDelegate,
+    MemoryFileDelegate,
+    SynchronousFileDelegate,
     # Compound Delegates
-    SimpleCacheFileDelegate, ReadOnlyDelegate
+    SimpleCacheFileDelegate,
+    ReadOnlyDelegate,
 )
+
 # Import the parser library utilities.
-from torncoder.file_util._parser import (
-    MultipartFormDataParser
-)
+from torncoder.file_util._parser import MultipartFormDataParser
 
 #
 # Specialized File Delegates
 #
 # Register the available file delegates.
-_ENGINE_MAPPING = {
-    'synchronous': SynchronousFileDelegate,
-    'memory': MemoryFileDelegate
-}
+_ENGINE_MAPPING = {"synchronous": SynchronousFileDelegate, "memory": MemoryFileDelegate}
 
 try:
     from torncoder.file_util._aiofile import NativeAioFileDelegate
 
-    _ENGINE_MAPPING['aio'] = NativeAioFileDelegate
+    _ENGINE_MAPPING["aio"] = NativeAioFileDelegate
 
     NATIVE_AIO_FILE_DELEGATE_ENABLED = True
 except ImportError:
@@ -38,7 +37,7 @@ except ImportError:
 try:
     from torncoder.file_util._threaded import ThreadedFileDelegate
 
-    _ENGINE_MAPPING['threaded'] = ThreadedFileDelegate
+    _ENGINE_MAPPING["threaded"] = ThreadedFileDelegate
 
     THREADED_FILE_DELEGATE_ENABLED = True
 except ImportError:
@@ -53,5 +52,5 @@ def get_available_delegate_types():
 def create_delegate(delegate_type, *args, **kwargs):
     engine_type = _ENGINE_MAPPING.get(delegate_type)
     if not engine_type:
-        raise ValueError('Unrecognized delegate type!')
+        raise ValueError("Unrecognized delegate type!")
     return engine_type(*args, **kwargs)

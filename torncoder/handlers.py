@@ -7,18 +7,16 @@ import re
 from tempfile import tempdir
 from contextlib import AsyncExitStack
 from typing import Any, Optional, Awaitable, Union
+
 # Third-party Imports
 from tornado import web, ioloop
+
 # Local Imports
-from torncoder.utils import (
-    parse_header_date, parse_range_header, logger
-)
-from torncoder.file_util import (
-    FileInfo, AbstractFileDelegate
-)
+from torncoder.utils import parse_header_date, parse_range_header, logger
+from torncoder.file_util import FileInfo, AbstractFileDelegate
 
 
-ETAGS_FROM_IF_NONE_MATCH_REGEX = re.compile(r'\"(?P<etag>.+?)\",?')
+ETAGS_FROM_IF_NONE_MATCH_REGEX = re.compile(r"\"(?P<etag>.+?)\",?")
 """Regex that should map the 'If-None-Match' header to a list of ETags.
 
 Like most regexes, this one is a pain :/ It uses '.+?' where it does to avoid
@@ -29,11 +27,9 @@ split multiple match candidates from the header.
 
 def check_if_304(file_info, headers) -> bool:
     if file_info.e_tag:
-        etag_values = headers.get('If-None-Match', '')
+        etag_values = headers.get("If-None-Match", "")
         if etag_values:
-            matching_etags = ETAGS_FROM_IF_NONE_MATCH_REGEX.findall(
-                etag_values
-            )
+            matching_etags = ETAGS_FROM_IF_NONE_MATCH_REGEX.findall(etag_values)
             expected_match = file_info.e_tag.strip('"')
             # Check if the file_etag matches one of the values.
             # If there is a match, we should return 304.
@@ -43,7 +39,7 @@ def check_if_304(file_info, headers) -> bool:
     # NOTE: According to the spec, the ETag checks should take priority
     # over the Last-Modified checks.
     if file_info.last_modified:
-        modified_since = headers.get('If-Modified-Since', '')
+        modified_since = headers.get("If-Modified-Since", "")
         if modified_since:
             modified_dt = parse_header_date(modified_since)
             if modified_dt >= file_info.last_modified:
@@ -59,7 +55,7 @@ def check_if_412(curr_file_info: FileInfo, headers) -> bool:
     return a 412. The details are described somewhat in the MDN docs here:
     https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/412
     """
-    e_tag = headers.get('If-Match')
+    e_tag = headers.get("If-Match")
     if e_tag:
         # The requested ETag does not match the ETag of the current
         # entry; this should imply a 412.
@@ -71,19 +67,20 @@ def set_headers_for_file_info(
     req_handler: web.RequestHandler, file_info: FileInfo
 ) -> None:
     if file_info.e_tag:
-        req_handler.set_header('ETag', file_info.e_tag)
+        req_handler.set_header("ETag", file_info.e_tag)
     if file_info.last_modified:
-        req_handler.set_header('Last-Modified', file_info.last_modified)
+        req_handler.set_header("Last-Modified", file_info.last_modified)
     if file_info.content_type:
-        req_handler.set_header('Content-Type', file_info.content_type)
+        req_handler.set_header("Content-Type", file_info.content_type)
 
 
 async def serve_get_from_file_info(
-        delegate: AbstractFileDelegate,
-        file_info: FileInfo,
-        req_handler: web.RequestHandler,
-        head_only: bool =False,
-        ignore_caching: bool=False):
+    delegate: AbstractFileDelegate,
+    file_info: FileInfo,
+    req_handler: web.RequestHandler,
+    head_only: bool = False,
+    ignore_caching: bool = False,
+):
     # First, check the request headers and process them.
     request = req_handler.request
 
@@ -91,7 +88,7 @@ async def serve_get_from_file_info(
     # content directly.
     set_headers_for_file_info(req_handler, file_info)
     # This should support partial requests, so add the Accept-Ranges header.
-    req_handler.set_header('Accept-Ranges', 'bytes')
+    req_handler.set_header("Accept-Ranges", "bytes")
 
     if not ignore_caching:
         if check_if_304(file_info, request.headers):
@@ -111,7 +108,7 @@ async def serve_get_from_file_info(
         return
 
     # Support handling 'Range' header requests as well.
-    content_range = request.headers.get('Range')
+    content_range = request.headers.get("Range")
     partial_response = False
     if content_range:
         start, end = parse_range_header(content_range)
@@ -134,8 +131,7 @@ async def serve_get_from_file_info(
         req_handler.set_status(206)
     else:
         req_handler.set_status(200)
-    async for chunk in delegate.read_generator(
-            file_info, start=start, end=end):
+    async for chunk in delegate.read_generator(file_info, start=start, end=end):
         # TODO -- How frequently should this await and flush?
         req_handler.write(chunk)
         await req_handler.flush()
@@ -181,9 +177,7 @@ class UploadFileProxy(object):
         await self._delegate.start_write(self._key)
         self._is_started = True
 
-    async def data_received(
-        self, data: Union[bytes, memoryview, bytearray]
-    ) -> int:
+    async def data_received(self, data: Union[bytes, memoryview, bytearray]) -> int:
         try:
             if not self._error:
                 await self._delegate.write(self._key, data)
@@ -206,14 +200,12 @@ class ReadonlyFileHandler(web.RequestHandler):
      - HEAD: Get content Metadata (same as GET without content).
     """
 
-    def initialize(self, delegate: AbstractFileDelegate =None):
+    def initialize(self, delegate: AbstractFileDelegate = None):
         self.delegate = delegate
 
     def send_status(self, status_code, message):
         self.set_status(status_code)
-        self.write(dict(
-            status_code=status_code, message=message
-        ))
+        self.write(dict(status_code=status_code, message=message))
 
     async def get(self, path):
         try:
@@ -223,9 +215,7 @@ class ReadonlyFileHandler(web.RequestHandler):
                 self.write(dict(code=404, message="File not found!"))
                 return
             # Proxy the request handling to the generalized call.
-            await serve_get_from_file_info(
-                self.delegate, info, self,
-                head_only=False)
+            await serve_get_from_file_info(self.delegate, info, self, head_only=False)
         except Exception:
             self.set_status(500)
             self.write(dict(code=500, message="Internal server error!"))
@@ -238,9 +228,7 @@ class ReadonlyFileHandler(web.RequestHandler):
                 self.write(dict(code=404, message="File not found!"))
                 return
             # Proxy the request handling to the generalized call.
-            await serve_get_from_file_info(
-                self.delegate, info, self,
-                head_only=True)
+            await serve_get_from_file_info(self.delegate, info, self, head_only=True)
         except Exception:
             self.set_status(500)
             self.write(dict(code=500, message="Internal server error!"))
@@ -269,7 +257,7 @@ class ServeFileHandler(ReadonlyFileHandler):
     ```
     """
 
-    def initialize(self, delegate: AbstractFileDelegate =None):
+    def initialize(self, delegate: AbstractFileDelegate = None):
         self.delegate = delegate
         self._error = None
         self._exit_stack = AsyncExitStack()
@@ -281,21 +269,19 @@ class ServeFileHandler(ReadonlyFileHandler):
     def on_finish(self):
         if self._exit_stack:
             exit_stack = self._exit_stack
-            ioloop.IOLoop().current().add_callback(
-                exit_stack.aclose)
+            ioloop.IOLoop().current().add_callback(exit_stack.aclose)
             self._exit_stack = None
 
     def on_connection_close(self):
         if self._exit_stack:
             exit_stack = self._exit_stack
-            ioloop.IOLoop().current().add_callback(
-                exit_stack.aclose)
+            ioloop.IOLoop().current().add_callback(exit_stack.aclose)
             self._exit_stack = None
 
     async def prepare(self):
         # Parse the path as the first argument.
         try:
-            path = self.path_kwargs.get('path')
+            path = self.path_kwargs.get("path")
             if not path:
                 path = self.path_args[0]
         except Exception:
@@ -304,14 +290,13 @@ class ServeFileHandler(ReadonlyFileHandler):
 
         # If the request is a PUT, we are likely expecting a request
         # body, so initialize the file here.
-        if self.request.method.upper() == 'PUT':
+        if self.request.method.upper() == "PUT":
             self._curr_info = await self.delegate.get_file_info(path)
             if self._curr_info:
                 if check_if_412(self._curr_info, self.request.headers):
                     self.send_status(412, "Precondition failed!")
                     return
-            self._new_info = await self.delegate.start_write(
-                path, self.request.headers)
+            self._new_info = await self.delegate.start_write(path, self.request.headers)
         else:
             # Fetch the current file info.
             self._curr_info = await self.delegate.get_file_info(path)
@@ -336,9 +321,9 @@ class ServeFileHandler(ReadonlyFileHandler):
             # Set the ETag and Last-Modified headers (if appropriate) for
             # future reference and caching.
             if info.e_tag:
-                self.set_header('ETag', info.e_tag)
+                self.set_header("ETag", info.e_tag)
             if info.last_modified:
-                self.set_header('Last-Modified', info.last_modified)
+                self.set_header("Last-Modified", info.last_modified)
 
             # If a previous entry existed, return a 200.
             if self._curr_info:
@@ -347,15 +332,15 @@ class ServeFileHandler(ReadonlyFileHandler):
                 self.send_status(201, "Created new resource.")
         except Exception:
             logger.exception("Internal Error in PUT request!")
-            self.send_status(500, 'Internal Server Error')
+            self.send_status(500, "Internal Server Error")
 
     async def delete(self, path):
         try:
             if not self._curr_info:
-                self.send_status(404, 'File not found!')
+                self.send_status(404, "File not found!")
                 return
             await self.delegate.remove(self._curr_info)
-            self.send_status(200, 'File removed successfully.')
+            self.send_status(200, "File removed successfully.")
         except Exception:
             logger.exception("Error in DELETE: %s", self.request.uri)
-            self.send_status(500, 'Internal Server Error')
+            self.send_status(500, "Internal Server Error")

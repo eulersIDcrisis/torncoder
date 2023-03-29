@@ -11,10 +11,10 @@ import email.utils
 from typing import Optional, Tuple, Any
 
 
-logger = logging.getLogger('torncoder')
+logger = logging.getLogger("torncoder")
 
 
-MULTIPART_FORM_DATA_TYPE = 'multipart/form-data'
+MULTIPART_FORM_DATA_TYPE = "multipart/form-data"
 """Constant storing the 'multipart/form-data' content type."""
 
 
@@ -48,11 +48,11 @@ def parse_range_header(header_value: str) -> Tuple[int, Optional[int]]:
     try:
         if not header_value:
             return None, None
-        range_type, value = header_value.split('=', 1)
-        if range_type.strip() != 'bytes':
+        range_type, value = header_value.split("=", 1)
+        if range_type.strip() != "bytes":
             return None, None
         # Now, check 'value', which should be the range.
-        start_str, end_str = value.split('-', 1)        
+        start_str, end_str = value.split("-", 1)
         if end_str:
             end = int(end_str)
             if not start_str and end != 0:
@@ -72,10 +72,10 @@ def parse_range_header(header_value: str) -> Tuple[int, Optional[int]]:
 
 def parse_content_name(content_disp: str) -> str:
     """Parse the 'name' field from Content-Disposition."""
-    for field in content_disp.split(';'):
+    for field in content_disp.split(";"):
         m = NAME_REGEX.search(field)
         if m:
-            return m.group('name')
+            return m.group("name")
     raise ValueError('No "name" field found in Content-Disposition!')
 
 
@@ -90,8 +90,8 @@ def is_path_inside_directory(root_dir: str, full_path: str) -> bool:
     NOTE: Both given paths are expected to be absolute paths!
     """
     full_root = os.path.abspath(root_dir)
-    if not full_root.endswith('/'):
-        full_root += '/'
+    if not full_root.endswith("/"):
+        full_root += "/"
     return full_path.startswith(full_root)
 
 
@@ -118,10 +118,10 @@ def force_abspath_inside_root_dir(root_dir: str, path: str):
       --> '/mnt/test/fda'
     """
     full_root = os.path.abspath(root_dir)
-    if not full_root.endswith('/'):
-        full_root += '/'
+    if not full_root.endswith("/"):
+        full_root += "/"
     # Strip any space or possible path separator characters.
-    path = path.lstrip(' \\/')
+    path = path.lstrip(" \\/")
     full_path = os.path.abspath(os.path.join(full_root, path))
     if full_path.startswith(full_root):
         return full_path

@@ -5,13 +5,12 @@ Module for handling file request parsing.
 import re
 import enum
 import warnings
+
 # Third-party Imports
 from tornado.httputil import HTTPHeaders
+
 # Local Imports
-from torncoder.utils import (
-    MULTIPART_FORM_DATA_TYPE,
-    parse_content_name
-)
+from torncoder.utils import MULTIPART_FORM_DATA_TYPE, parse_content_name
 from torncoder.file_util._core import AbstractFileDelegate
 
 
@@ -45,13 +44,10 @@ class MultipartFormDataParser(object):
     @classmethod
     def from_content_type_header(cls, delegate, header):
         if isinstance(header, bytes):
-            header = header.decode('utf-8')
+            header = header.decode("utf-8")
         boundary = None
         # Make sure the header is the multipart/form-data.
-        parts = [
-            part.strip()
-            for part in header.split(';')
-        ]
+        parts = [part.strip() for part in header.split(";")]
         if parts[0].lower() != MULTIPART_FORM_DATA_TYPE:
             raise ValueError("Invalid Content-Type: {}".format(parts[0]))
 
@@ -59,15 +55,14 @@ class MultipartFormDataParser(object):
         for part in parts:
             m = BOUNDARY_REGEX.match(part)
             if m:
-                boundary = m.group('boundary')
+                boundary = m.group("boundary")
                 return cls(delegate, boundary)
         raise ValueError("Required 'boundary' option not found in header!")
-
 
     def __init__(self, delegate: AbstractFileDelegate, boundary: str):
         # Be nice and decode the boundary if it is a bytes object.
         if isinstance(boundary, bytes):
-            boundary = boundary.decode('utf-8')
+            boundary = boundary.decode("utf-8")
         # Store the delegate to write out the data.
         self._delegate = delegate
         self._boundary = boundary
@@ -79,8 +74,8 @@ class MultipartFormDataParser(object):
         self._buffer = bytearray()
 
         # Variables to hold the boundary matches.
-        self._boundary_next = '--{}\r\n'.format(self._boundary).encode()
-        self._boundary_end = '--{}--\r\n'.format(self._boundary).encode()
+        self._boundary_next = "--{}\r\n".format(self._boundary).encode()
+        self._boundary_end = "--{}--\r\n".format(self._boundary).encode()
         self._boundary_base = self._boundary_next[:-2]
 
         # Variables for caching boundary matching.
@@ -121,7 +116,7 @@ class MultipartFormDataParser(object):
             # PARSE_BODY state --> Expecting to parse the file contents.
             if self._state == ParserState.PARSE_BODY:
                 # Search for the boundary characters.
-                idx = self._buffer.find(b'-')
+                idx = self._buffer.find(b"-")
                 if idx < 0:
                     # No match against any boundary character. Write out the
                     # whole buffer.
@@ -171,7 +166,7 @@ class MultipartFormDataParser(object):
 
                 # No match so far, so write out the data up to the next
                 # boundary delimiter.
-                next_idx = self._buffer.find(b'-', 1)
+                next_idx = self._buffer.find(b"-", 1)
                 if next_idx < 0:
                     data = self._buffer
                     self._buffer = bytearray()
@@ -195,7 +190,7 @@ class MultipartFormDataParser(object):
                 # the 'PARSE_HEADER' state. Also, continue to run through the
                 # loop again with the new state.
                 if self._buffer.startswith(self._boundary_next):
-                    self._buffer = self._buffer[len(self._boundary_next):]
+                    self._buffer = self._buffer[len(self._boundary_next) :]
                     self.change_state(ParserState.PARSE_FILE_HEADERS)
                     continue
                 # Check against 'self._boundary_end' as well. There is a slim
@@ -207,7 +202,7 @@ class MultipartFormDataParser(object):
                 elif self._buffer.startswith(self._boundary_end):
                     # Done parsing. We should probably sanity-check that all
                     # data was consumed.
-                    self._buffer = self._buffer[len(self._boundary_end):]
+                    self._buffer = self._buffer[len(self._boundary_end) :]
                     self.change_state(ParserState.PARSING_DONE)
                     continue
                 else:
@@ -215,7 +210,7 @@ class MultipartFormDataParser(object):
 
             # PARSE_HEADERS state --> Expecting to parse headers with CRLF.
             if self._state == ParserState.PARSE_FILE_HEADERS:
-                idx = self._buffer.find(b'\r\n\r\n', self._last_idx)
+                idx = self._buffer.find(b"\r\n\r\n", self._last_idx)
                 # Implies no match. Update the next index to search to be:
                 # max(0, len(buffer) - 3)
                 # as an optimization to speed up future comparisons. This
@@ -231,15 +226,14 @@ class MultipartFormDataParser(object):
                     return
                 # Otherwise, we have a match. Parse this into a dictionary of
                 # headers and pass the result to create a new file.
-                data = self._buffer[:idx + 4].decode('utf-8')
-                self._buffer = self._buffer[idx + 4:]
+                data = self._buffer[: idx + 4].decode("utf-8")
+                self._buffer = self._buffer[idx + 4 :]
                 headers = HTTPHeaders.parse(data)
-                content_disp = headers.get('Content-Disposition', '')
+                content_disp = headers.get("Content-Disposition", "")
                 name = parse_content_name(content_disp)
 
                 # Call the delegate with the new file.
-                self._info = await self._delegate.start_write(
-                    name, headers=headers)
+                self._info = await self._delegate.start_write(name, headers=headers)
 
                 # Update the buffer and the state.
                 self.change_state(ParserState.PARSE_BODY, name=name)
@@ -250,8 +244,10 @@ class MultipartFormDataParser(object):
                 if len(self._buffer) > 0:
                     # WARNING: Data is left in the buffer when we should be
                     # finished...
-                    warnings.warn("Finished with non-empty buffer ({} bytes "
-                                 "remaining).".format(len(self._buffer)))
+                    warnings.warn(
+                        "Finished with non-empty buffer ({} bytes "
+                        "remaining).".format(len(self._buffer))
+                    )
 
                 # Even if there is data remaining, we should exit the loop.
                 return

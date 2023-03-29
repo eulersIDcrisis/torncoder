@@ -5,19 +5,23 @@ Specific overrides for the 'aiofiles' module.
 import io
 import os
 from typing import Mapping, Optional
+
 # 'aiofiles' import
 import aiofiles
 import aiofiles.os
+
 # Local Imports
 from torncoder.utils import is_path_inside_directory
 from torncoder.file_util._core import (
-    FileInfo, AbstractFileDelegate, CacheError,
-    force_abspath_inside_root_dir, create_file_info_from_os_stat
+    FileInfo,
+    AbstractFileDelegate,
+    CacheError,
+    force_abspath_inside_root_dir,
+    create_file_info_from_os_stat,
 )
 
 
 class ThreadedFileDelegate(AbstractFileDelegate):
-
     def __init__(self, root_dir: str):
         super(ThreadedFileDelegate, self).__init__()
         self._root_dir = root_dir
@@ -34,27 +38,25 @@ class ThreadedFileDelegate(AbstractFileDelegate):
     async def start_write(self, key: str, headers: Mapping[str, str]):
         path = force_abspath_inside_root_dir(self._root_dir, key)
         info = FileInfo(key, path)
-        stm = await aiofiles.open(path, 'wb')
+        stm = await aiofiles.open(path, "wb")
         self._stream_mapping[key] = stm
         return info
 
     async def write(self, file_info: FileInfo, data):
         stm = self._stream_mapping.get(file_info.key)
         if not stm:
-            raise CacheError('No stream open for key: {}'.format(
-                file_info.key))
+            raise CacheError("No stream open for key: {}".format(file_info.key))
         return await stm.write(data)
 
     async def finish_write(self, file_info: FileInfo):
         stm = self._stream_mapping.get(file_info.key)
         if not stm:
-            raise CacheError('No stream open for key: {}'.format(
-                file_info.key))
+            raise CacheError("No stream open for key: {}".format(file_info.key))
         await stm.close()
         return file_info
 
     async def read_generator(self, file_info, start=None, end=None):
-        async with aiofiles.open(file_info.internal_key, 'rb') as stm:
+        async with aiofiles.open(file_info.internal_key, "rb") as stm:
             if start is not None:
                 await stm.seek(start)
             else:
@@ -76,6 +78,5 @@ class ThreadedFileDelegate(AbstractFileDelegate):
                 yield chunk
 
     async def remove(self, file_info):
-        assert is_path_inside_directory(
-            self._root_dir, file_info.internal_key)
+        assert is_path_inside_directory(self._root_dir, file_info.internal_key)
         await aiofiles.os.remove(file_info.internal_key)
